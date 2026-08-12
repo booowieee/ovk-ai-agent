@@ -30,8 +30,11 @@ class OpenVKPoller:
                 # 2. Check if bot is enabled via DB settings and load configuration
                 db_settings = await SettingsRepository.get_settings()
                 if not db_settings or not db_settings.is_enabled:
+                    logger.info(f"[Poller] Bot is disabled in database or settings row is empty.")
                     await asyncio.sleep(self.state.poll_interval)
                     continue
+
+                logger.info(f"[Poller] Tick. token={'set' if db_settings.openvk_token else 'empty'}, user_id={db_settings.openvk_user_id}, notifications_api={self.state.use_notifications_api}")
 
                 # Update settings dynamically from database
                 if db_settings.openvk_token:
@@ -46,11 +49,14 @@ class OpenVKPoller:
                 # 3. Try notifications strategy
                 if self.state.use_notifications_api:
                     try:
+                        logger.info(f"[Poller] Requesting notifications with start_time={self._last_notification_time}...")
                         notifications = await self.client.get_notifications(start_time=self._last_notification_time)
+                        logger.info(f"[Poller] Notifications response: {notifications}")
                         if notifications:
                             self._last_notification_time = notifications[0].get('date', int(time.time()))
                             for notif in notifications:
                                 ntype = notif.get('type')
+                                logger.info(f"[Poller] Processing notification type '{ntype}'")
                                 if ntype in ['reply_comment', 'mention_comments', 'mention']:
                                     feedback = notif.get('feedback', {})
                                     text = feedback.get('text', '')
@@ -74,7 +80,9 @@ class OpenVKPoller:
                 
                 # 4. Fallback wall polling
                 if not self.state.use_notifications_api:
+                    logger.info(f"[Poller:Fallback] Polling wall. user_id={self.client.user_id}")
                     posts = await self.client.get_wall_posts(self.client.user_id, filter='others')
+                    logger.info(f"[Poller:Fallback] Found {len(posts)} posts from others")
                     for post in posts:
                         post_id = post.get('id')
                         owner_id = post.get('owner_id')
@@ -83,15 +91,19 @@ class OpenVKPoller:
                         
                         post_key = f"{owner_id}_{post_id}"
                         last_count = self._known_comment_counts.get(post_key, 0)
+                        logger.info(f"[Poller:Fallback] Post {post_key}: comment count={comment_count}, last tracked count={last_count}")
                         
                         if comment_count > last_count:
                             self._known_comment_counts[post_key] = comment_count
+                            logger.info(f"[Poller:Fallback] Fetching comments for post {post_key}...")
                             comments = await self.client.get_comments(owner_id, post_id, count=comment_count - last_count)
                             for comment in comments:
                                 text = comment.get('text', '')
                                 comment_id = comment.get('id')
                                 from_user_id = comment.get('from_id')
-                                if is_mention_of_user(text, self.client.user_id):
+                                is_mention = is_mention_of_user(text, self.client.user_id)
+                                logger.info(f"[Poller:Fallback] Comment {comment_id}: mention={is_mention}, text='{text}'")
+                                if is_mention:
                                     mention_id = f"{owner_id}_{post_id}_{comment_id}"
                                     await self._process_mention(
                                         mention_id, text, owner_id, post_id, comment_id, from_user_id,
