@@ -128,7 +128,7 @@ class OpenVKPoller:
                                         else:
                                             owner_id = feedback.get('owner_id') or feedback.get('to_id')
                                             post_id = feedback.get('post_id')
-                                        mention_id = f"comment_{comment_id}"
+                                        mention_id = f"{owner_id}_{post_id}_{comment_id}"
                                         
                                     await self._process_mention(
                                         mention_id, text, owner_id, post_id, comment_id, from_user_id,
