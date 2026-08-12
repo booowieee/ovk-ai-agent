@@ -15,6 +15,7 @@ class OpenVKPoller:
         self.responder = responder
         self.gemini_service = gemini_service
         self._known_comment_counts: dict[str, int] = {}
+        self._monitored_walls: list[int] = []
 
     async def run(self):
         logger.info("Starting OpenVK poller...")
@@ -33,8 +34,6 @@ class OpenVKPoller:
                     await asyncio.sleep(self.state.poll_interval)
                     continue
 
-                logger.info(f"[Poller] Tick. token={'set' if db_settings.openvk_token else 'empty'}, user_id={db_settings.openvk_user_id}, notifications_api={self.state.use_notifications_api}")
-
                 # Update settings dynamically from database
                 if db_settings.openvk_token:
                     self.client.token = db_settings.openvk_token
@@ -42,15 +41,22 @@ class OpenVKPoller:
                     self.client.instance_url = db_settings.openvk_instance_url.rstrip("/")
                 if db_settings.openvk_user_id:
                     self.client.user_id = db_settings.openvk_user_id
+                    if db_settings.openvk_user_id not in self._monitored_walls:
+                        self._monitored_walls.append(db_settings.openvk_user_id)
                 if db_settings.poll_interval:
                     self.state.poll_interval = db_settings.poll_interval
 
-                # 3. Try notifications strategy
+                logger.info(f"[Poller] Tick. token={'set' if db_settings.openvk_token else 'empty'}, user_id={db_settings.openvk_user_id}, monitored_walls={self._monitored_walls}")
+
+                # 3. Process Notifications Strategy (if enabled)
                 if self.state.use_notifications_api:
                     try:
                         logger.info(f"[Poller] Requesting latest notifications...")
-                        notifications = await self.client.get_notifications(start_time=0)
-                        logger.info(f"[Poller] Notifications response: {notifications}")
+                        raw_notif = await self.client.call_method("notifications.get", {"v": "5.81", "count": 10})
+                        notifications = raw_notif.get('response', {}).get('items', [])
+                        profiles = raw_notif.get('response', {}).get('profiles', [])
+                        
+                        logger.info(f"[Poller] Notifications response: {len(notifications)} items")
                         if notifications:
                             for notif in notifications:
                                 ntype = notif.get('type')
@@ -60,6 +66,26 @@ class OpenVKPoller:
                                     text = feedback.get('text', '')
                                     parent = notif.get('parent')
                                     from_user_id = feedback.get('from_id')
+                                    
+                                    # Add notification sender to monitored walls to track their comments
+                                    if from_user_id and from_user_id != self.client.user_id:
+                                        if from_user_id in self._monitored_walls:
+                                            self._monitored_walls.remove(from_user_id)
+                                        self._monitored_walls.append(from_user_id)
+                                        # Keep list limited to bot wall + 2 other walls
+                                        external_walls = [w for w in self._monitored_walls if w != self.client.user_id]
+                                        if len(external_walls) > 2:
+                                            oldest = external_walls[0]
+                                            self._monitored_walls.remove(oldest)
+                                    
+                                    # Try to find sender name in profiles
+                                    first_name = None
+                                    if from_user_id:
+                                        for p in profiles:
+                                            if p.get('id') == from_user_id:
+                                                first_name = p.get('first_name')
+                                                break
+                                    reply_prefix = f"[id{from_user_id}|{first_name or 'Пользователь'}], " if from_user_id else ""
                                     
                                     if ntype == 'mention' and not parent:
                                         # Mention in a post
@@ -80,7 +106,8 @@ class OpenVKPoller:
                                         
                                     await self._process_mention(
                                         mention_id, text, owner_id, post_id, comment_id, from_user_id,
-                                        system_prompt=db_settings.system_prompt
+                                        system_prompt=db_settings.system_prompt,
+                                        reply_prefix=reply_prefix
                                     )
                     except Exception as e:
                         error_msg = str(e)
@@ -90,37 +117,43 @@ class OpenVKPoller:
                         else:
                             logger.error(f"Error fetching notifications: {e}")
                 
-                # 4. Fallback wall polling
-                if not self.state.use_notifications_api:
-                    logger.info(f"[Poller:Fallback] Polling wall. user_id={self.client.user_id}")
-                    posts = await self.client.get_wall_posts(self.client.user_id, filter='others')
-                    logger.info(f"[Poller:Fallback] Found {len(posts)} posts from others")
-                    for post in posts:
-                        post_id = post.get('id')
-                        owner_id = post.get('owner_id')
-                        comments_info = post.get('comments', {})
-                        comment_count = comments_info.get('count', 0)
-                        
-                        post_key = f"{owner_id}_{post_id}"
-                        last_count = self._known_comment_counts.get(post_key, 0)
-                        logger.info(f"[Poller:Fallback] Post {post_key}: comment count={comment_count}, last tracked count={last_count}")
-                        
-                        if comment_count > last_count:
-                            self._known_comment_counts[post_key] = comment_count
-                            logger.info(f"[Poller:Fallback] Fetching comments for post {post_key}...")
-                            comments = await self.client.get_comments(owner_id, post_id, count=comment_count - last_count)
-                            for comment in comments:
-                                text = comment.get('text', '')
-                                comment_id = comment.get('id')
-                                from_user_id = comment.get('from_id')
-                                is_mention = is_mention_of_user(text, self.client.user_id)
-                                logger.info(f"[Poller:Fallback] Comment {comment_id}: mention={is_mention}, text='{text}'")
-                                if is_mention:
-                                    mention_id = f"{owner_id}_{post_id}_{comment_id}"
-                                    await self._process_mention(
-                                        mention_id, text, owner_id, post_id, comment_id, from_user_id,
-                                        system_prompt=db_settings.system_prompt
-                                    )
+                # 4. Wall Polling Strategy (Always run this in addition, to capture wall comment mentions)
+                logger.info(f"[Poller] Running Wall Polling for walls: {self._monitored_walls}")
+                for wall_owner_id in list(self._monitored_walls):
+                    try:
+                        logger.info(f"[Poller:Wall] Polling wall of user {wall_owner_id}...")
+                        posts = await self.client.get_wall_posts(wall_owner_id, filter='all', count=5)
+                        for post in posts:
+                            post_id = post.get('id')
+                            owner_id = post.get('owner_id') or wall_owner_id
+                            comments_info = post.get('comments', {})
+                            comment_count = comments_info.get('count', 0)
+                            
+                            post_key = f"{owner_id}_{post_id}"
+                            last_count = self._known_comment_counts.get(post_key, 0)
+                            logger.info(f"[Poller:Wall] Post {post_key}: comment count={comment_count}, last tracked count={last_count}")
+                            
+                            if comment_count > last_count:
+                                self._known_comment_counts[post_key] = comment_count
+                                logger.info(f"[Poller:Wall] Fetching new comments for post {post_key}...")
+                                comments = await self.client.get_comments(owner_id, post_id, count=comment_count - last_count)
+                                for comment in comments:
+                                    text = comment.get('text', '')
+                                    comment_id = comment.get('id')
+                                    from_user_id = comment.get('from_id')
+                                    is_mention = is_mention_of_user(text, self.client.user_id)
+                                    logger.info(f"[Poller:Wall] Comment {comment_id}: mention={is_mention}, text='{text}'")
+                                    if is_mention:
+                                        mention_id = f"{owner_id}_{post_id}_{comment_id}"
+                                        # Since we don't have profiles from wall posts, use safe Пользователь mention
+                                        reply_prefix = f"[id{from_user_id}|Пользователь], " if from_user_id else ""
+                                        await self._process_mention(
+                                            mention_id, text, owner_id, post_id, comment_id, from_user_id,
+                                            system_prompt=db_settings.system_prompt,
+                                            reply_prefix=reply_prefix
+                                        )
+                    except Exception as e:
+                        logger.error(f"Error polling wall {wall_owner_id}: {e}")
             
             except Exception as e:
                 logger.error(f"Error in poller loop: {e}")
@@ -149,7 +182,7 @@ class OpenVKPoller:
                 logger.error(f"Error searching comment {comment_id} on wall {owner}: {e}")
         return None, None
 
-    async def _process_mention(self, mention_id: str, text: str, owner_id: Optional[int], post_id: Optional[int], comment_id: Optional[int] = None, from_user_id: Optional[int] = None, system_prompt: Optional[str] = None):
+    async def _process_mention(self, mention_id: str, text: str, owner_id: Optional[int], post_id: Optional[int], comment_id: Optional[int] = None, from_user_id: Optional[int] = None, system_prompt: Optional[str] = None, reply_prefix: Optional[str] = None):
         if await self.responder.is_already_processed(mention_id):
             return
 
@@ -177,6 +210,9 @@ class OpenVKPoller:
         response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt)
         
         if response:
+            if reply_prefix:
+                response = f"{reply_prefix}{response}"
+                
             if comment_id is not None:
                 await self.responder.reply_to_comment(owner_id, post_id, comment_id, response)
             else:
