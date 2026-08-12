@@ -34,6 +34,9 @@ services:
     image: redis:7-alpine
     container_name: ovk_ai_redis
     restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -42,3 +45,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

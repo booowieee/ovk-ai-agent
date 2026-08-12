@@ -156,9 +156,15 @@ class OpenVKPoller:
                             comment_count = comments_info.get('count', 0)
                             
                             post_key = f"{owner_id}_{post_id}"
+                            is_first_check = post_key not in self._known_comment_counts
                             last_count = self._known_comment_counts.get(post_key, 0)
                             logger.info(f"[Poller:Wall] Post {post_key}: comment count={comment_count}, last tracked count={last_count}")
                             
+                            if is_first_check:
+                                self._known_comment_counts[post_key] = comment_count
+                                logger.info(f"[Poller:Wall] Initialized post {post_key} comment count to {comment_count}")
+                                continue
+                                
                             if comment_count > last_count:
                                 self._known_comment_counts[post_key] = comment_count
                                 logger.info(f"[Poller:Wall] Fetching new comments for post {post_key}...")
