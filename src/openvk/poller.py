@@ -162,7 +162,7 @@ class OpenVKPoller:
                             if comment_count > last_count:
                                 self._known_comment_counts[post_key] = comment_count
                                 logger.info(f"[Poller:Wall] Fetching new comments for post {post_key}...")
-                                comments = await self.client.get_comments(owner_id, post_id, count=comment_count - last_count)
+                                comments = await self.client.get_comments(owner_id, post_id, count=comment_count - last_count, offset=last_count)
                                 for comment in comments:
                                     text = comment.get('text', '')
                                     comment_id = comment.get('id')
