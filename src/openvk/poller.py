@@ -63,7 +63,7 @@ class OpenVKPoller:
                                     comment_id = feedback.get('id')
                                     from_user_id = feedback.get('from_id')
                                     
-                                    mention_id = f"{owner_id}_{post_id}_{comment_id}"
+                                    mention_id = f"comment_{comment_id}"
                                     await self._process_mention(
                                         mention_id, text, owner_id, post_id, comment_id, from_user_id,
                                         system_prompt=db_settings.system_prompt
@@ -113,18 +113,53 @@ class OpenVKPoller:
 
             await asyncio.sleep(self.state.poll_interval)
 
-    async def _process_mention(self, mention_id: str, text: str, owner_id: int, post_id: int, comment_id: Optional[int] = None, from_user_id: Optional[int] = None, system_prompt: Optional[str] = None):
+    async def _find_post_id_for_comment(self, comment_id: int, from_user_id: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+        """Ищет owner_id и post_id для комментария на стенах."""
+        possible_owners = []
+        if from_user_id:
+            possible_owners.append(from_user_id)
+        possible_owners.append(self.client.user_id)
+        
+        for owner in possible_owners:
+            try:
+                logger.info(f"[Poller] Searching comment {comment_id} on wall of {owner}...")
+                posts = await self.client.get_wall_posts(owner_id=owner, count=10)
+                for post in posts:
+                    pid = post.get('id')
+                    comments = await self.client.get_comments(owner_id=owner, post_id=pid, count=50)
+                    for comment in comments:
+                        if comment.get('id') == comment_id:
+                            logger.info(f"[Poller] Found comment {comment_id} on wall of {owner} under post {pid}")
+                            return owner, pid
+            except Exception as e:
+                logger.error(f"Error searching comment {comment_id} on wall {owner}: {e}")
+        return None, None
+
+    async def _process_mention(self, mention_id: str, text: str, owner_id: Optional[int], post_id: Optional[int], comment_id: Optional[int] = None, from_user_id: Optional[int] = None, system_prompt: Optional[str] = None):
         if await self.responder.is_already_processed(mention_id):
             return
 
+        # Если owner_id или post_id отсутствует, ищем их по стенам
+        if (owner_id is None or post_id is None) and comment_id is not None:
+            logger.info(f"[Poller] Post/owner ID missing. Searching for comment {comment_id}...")
+            owner_id, post_id = await self._find_post_id_for_comment(comment_id, from_user_id)
+            if owner_id is None or post_id is None:
+                logger.warning(f"[Poller] Could not find post/owner ID for comment {comment_id}. Skipping.")
+                return
+            # Переопределяем mention_id с реальными ID
+            mention_id = f"{owner_id}_{post_id}_{comment_id}"
+            # Проверяем реальный ID на случай, если уже обработали
+            if await self.responder.is_already_processed(mention_id):
+                return
+
         context_text = text
         if comment_id is not None:
-            # We can fetch parent comment context here in the future
+            # Тут можно будет расширить подгрузку родительского контекста
             pass
             
         clean_text = clean_mention_from_text(context_text, self.client.user_id)
         
-        logger.info(f"Generating response for mention: {mention_id}")
+        logger.info(f"Generating response for mention: {mention_id} (owner={owner_id}, post={post_id})")
         response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt)
         
         if response:
