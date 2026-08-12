@@ -163,28 +163,37 @@ class OpenVKPoller:
                             if is_first_check:
                                 self._known_comment_counts[post_key] = comment_count
                                 logger.info(f"[Poller:Wall] Initialized post {post_key} comment count to {comment_count}")
-                                continue
-                                
-                            if comment_count > last_count:
-                                self._known_comment_counts[post_key] = comment_count
-                                logger.info(f"[Poller:Wall] Fetching new comments for post {post_key}...")
-                                comments = await self.client.get_comments(owner_id, post_id, count=comment_count - last_count, offset=last_count)
-                                for comment in comments:
-                                    text = comment.get('text', '')
-                                    comment_id = comment.get('id')
-                                    from_user_id = comment.get('from_id')
-                                    is_mention = is_mention_of_user(text, self.client.user_id)
-                                    logger.info(f"[Poller:Wall] Comment {comment_id}: mention={is_mention}, text='{text}'")
-                                    if is_mention:
-                                        mention_id = f"{owner_id}_{post_id}_{comment_id}"
-                                        # Resolve name dynamically with cache
-                                        first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
-                                        reply_prefix = f"[id{from_user_id}|{first_name}], " if from_user_id else ""
-                                        await self._process_mention(
-                                            mention_id, text, owner_id, post_id, comment_id, from_user_id,
-                                            system_prompt=db_settings.system_prompt,
-                                            reply_prefix=reply_prefix
-                                        )
+                                if comment_count > 0:
+                                    startup_fetch_count = min(5, comment_count)
+                                    startup_offset = comment_count - startup_fetch_count
+                                    logger.info(f"[Poller:Wall] Startup check: fetching latest {startup_fetch_count} comments for post {post_key}...")
+                                    comments = await self.client.get_comments(owner_id, post_id, count=startup_fetch_count, offset=startup_offset)
+                                else:
+                                    comments = []
+                            else:
+                                if comment_count > last_count:
+                                    self._known_comment_counts[post_key] = comment_count
+                                    logger.info(f"[Poller:Wall] Fetching new comments for post {post_key}...")
+                                    comments = await self.client.get_comments(owner_id, post_id, count=comment_count - last_count, offset=last_count)
+                                else:
+                                    comments = []
+
+                            for comment in comments:
+                                text = comment.get('text', '')
+                                comment_id = comment.get('id')
+                                from_user_id = comment.get('from_id')
+                                is_mention = is_mention_of_user(text, self.client.user_id)
+                                logger.info(f"[Poller:Wall] Comment {comment_id}: mention={is_mention}, text='{text}'")
+                                if is_mention:
+                                    mention_id = f"{owner_id}_{post_id}_{comment_id}"
+                                    # Resolve name dynamically with cache
+                                    first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
+                                    reply_prefix = f"[id{from_user_id}|{first_name}], " if from_user_id else ""
+                                    await self._process_mention(
+                                        mention_id, text, owner_id, post_id, comment_id, from_user_id,
+                                        system_prompt=db_settings.system_prompt,
+                                        reply_prefix=reply_prefix
+                                    )
                     except Exception as e:
                         logger.error(f"Error polling wall {wall_owner_id}: {e}")
             
