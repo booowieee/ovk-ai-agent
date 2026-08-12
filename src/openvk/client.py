@@ -5,9 +5,9 @@ from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
 from src.utils.logger import logger
 
 class OpenVKClient:
-    def __init__(self, state: AppState, instance_url: str, token: str, user_id: int):
+    def __init__(self, state: AppState, instance_url: str = "", token: str = "", user_id: int = 0):
         self.state = state
-        self.instance_url = instance_url.rstrip("/")
+        self.instance_url = instance_url.rstrip("/") if instance_url else ""
         self.token = token
         self.user_id = user_id
         self._rate_limiter = RateLimiter(3.0)

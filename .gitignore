@@ -7,7 +7,7 @@ build/
 .venv/
 venv/
 sessions/
-logs/
+logs
 *.log
 .idea/
 .vscode/

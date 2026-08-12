@@ -27,10 +27,21 @@ class OpenVKPoller:
                     await asyncio.sleep(self.state.poll_interval)
                     continue
 
-                # 2. Check if bot is enabled via DB settings
-                if not await SettingsRepository.is_enabled():
+                # 2. Check if bot is enabled via DB settings and load configuration
+                db_settings = await SettingsRepository.get_settings()
+                if not db_settings or not db_settings.is_enabled:
                     await asyncio.sleep(self.state.poll_interval)
                     continue
+
+                # Update settings dynamically from database
+                if db_settings.openvk_token:
+                    self.client.token = db_settings.openvk_token
+                if db_settings.openvk_instance_url:
+                    self.client.instance_url = db_settings.openvk_instance_url.rstrip("/")
+                if db_settings.openvk_user_id:
+                    self.client.user_id = db_settings.openvk_user_id
+                if db_settings.poll_interval:
+                    self.state.poll_interval = db_settings.poll_interval
 
                 # 3. Try notifications strategy
                 if self.state.use_notifications_api:
@@ -50,7 +61,8 @@ class OpenVKPoller:
                                     
                                     mention_id = f"{owner_id}_{post_id}_{comment_id}"
                                     await self._process_mention(
-                                        mention_id, text, owner_id, post_id, comment_id, from_user_id
+                                        mention_id, text, owner_id, post_id, comment_id, from_user_id,
+                                        system_prompt=db_settings.system_prompt
                                     )
                     except Exception as e:
                         error_msg = str(e)
@@ -81,14 +93,17 @@ class OpenVKPoller:
                                 from_user_id = comment.get('from_id')
                                 if is_mention_of_user(text, self.client.user_id):
                                     mention_id = f"{owner_id}_{post_id}_{comment_id}"
-                                    await self._process_mention(mention_id, text, owner_id, post_id, comment_id, from_user_id)
+                                    await self._process_mention(
+                                        mention_id, text, owner_id, post_id, comment_id, from_user_id,
+                                        system_prompt=db_settings.system_prompt
+                                    )
             
             except Exception as e:
                 logger.error(f"Error in poller loop: {e}")
 
             await asyncio.sleep(self.state.poll_interval)
 
-    async def _process_mention(self, mention_id: str, text: str, owner_id: int, post_id: int, comment_id: Optional[int] = None, from_user_id: Optional[int] = None):
+    async def _process_mention(self, mention_id: str, text: str, owner_id: int, post_id: int, comment_id: Optional[int] = None, from_user_id: Optional[int] = None, system_prompt: Optional[str] = None):
         if await self.responder.is_already_processed(mention_id):
             return
 
@@ -100,7 +115,7 @@ class OpenVKPoller:
         clean_text = clean_mention_from_text(context_text, self.client.user_id)
         
         logger.info(f"Generating response for mention: {mention_id}")
-        response = await self.gemini_service.generate(clean_text)
+        response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt)
         
         if response:
             if comment_id is not None:

@@ -27,25 +27,27 @@ async def main():
     # Initialize DB
     await init_db()
 
-    # Initialize external clients
-    http_client = httpx.AsyncClient()
-    redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-
     # Setup application state
-    app_state = AppState(
-        is_running=True,
-        http_client=http_client,
-        redis=redis_client,
-        gemini_semaphore=asyncio.Semaphore(3),
-        poll_interval=settings.POLL_INTERVAL,
-        use_notifications_api=False
-    )
+    app_state = AppState()
+    await app_state.init_connections(settings.REDIS_URL)
+    app_state.poll_interval = settings.POLL_INTERVAL
+    app_state.use_notifications_api = True
 
     # Initialize services
     gemini_service = GeminiService(app_state)
-    openvk_client = OpenVKClient(app_state)
-    openvk_responder = OpenVKResponder(app_state, openvk_client, gemini_service)
-    openvk_poller = OpenVKPoller(app_state, openvk_client, openvk_responder)
+    openvk_client = OpenVKClient(
+        state=app_state,
+        instance_url=settings.OVK_INSTANCE_URL,
+        token=settings.OVK_ACCESS_TOKEN,
+        user_id=settings.OVK_USER_ID
+    )
+    openvk_responder = OpenVKResponder(client=openvk_client, redis=app_state.redis)
+    openvk_poller = OpenVKPoller(
+        state=app_state,
+        client=openvk_client,
+        responder=openvk_responder,
+        gemini_service=gemini_service
+    )
 
     # Initialize Telegram Control Bot
     bot = Bot(token=settings.BOT_TOKEN)
@@ -53,16 +55,17 @@ async def main():
     dp.include_router(admin_router)
     
     # Inject redis into dispatcher for handlers
-    dp['redis'] = redis_client
+    dp['redis'] = app_state.redis
 
     # Setup graceful shutdown
-    setup_signal_handlers(app_state)
+    loop = asyncio.get_running_loop()
+    setup_signal_handlers(loop, app_state)
 
     async def run_poller():
         """Supervised poller execution"""
         while app_state.is_running:
             try:
-                await openvk_poller.start_polling()
+                await openvk_poller.run()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -72,12 +75,15 @@ async def main():
 
     async def run_telegram_bot():
         """Supervised bot execution"""
-        try:
-            await dp.start_polling(bot)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Ошибка в Telegram боте: {e}")
+        while app_state.is_running:
+            try:
+                await dp.start_polling(bot)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Ошибка в Telegram боте: {e}")
+                if app_state.is_running:
+                    await asyncio.sleep(5)
 
     try:
         # Run both tasks concurrently
@@ -90,8 +96,7 @@ async def main():
     finally:
         logger.info("Выполняю очистку ресурсов...")
         app_state.is_running = False
-        await http_client.aclose()
-        await redis_client.aclose()
+        await app_state.close()
         await bot.session.close()
         logger.info("Ресурсы очищены. Завершение работы.")
 
