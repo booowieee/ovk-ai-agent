@@ -14,7 +14,6 @@ class OpenVKPoller:
         self.client = client
         self.responder = responder
         self.gemini_service = gemini_service
-        self._last_notification_time: int = int(time.time())
         self._known_comment_counts: dict[str, int] = {}
 
     async def run(self):
@@ -49,11 +48,10 @@ class OpenVKPoller:
                 # 3. Try notifications strategy
                 if self.state.use_notifications_api:
                     try:
-                        logger.info(f"[Poller] Requesting notifications with start_time={self._last_notification_time}...")
-                        notifications = await self.client.get_notifications(start_time=self._last_notification_time)
+                        logger.info(f"[Poller] Requesting latest notifications...")
+                        notifications = await self.client.get_notifications(start_time=0)
                         logger.info(f"[Poller] Notifications response: {notifications}")
                         if notifications:
-                            self._last_notification_time = notifications[0].get('date', int(time.time()))
                             for notif in notifications:
                                 ntype = notif.get('type')
                                 logger.info(f"[Poller] Processing notification type '{ntype}'")

@@ -4,7 +4,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 from src.config import settings
-from src.database.connection import async_session_factory
 from src.repositories.settings_repo import SettingsRepository
 from src.control_bot.keyboards.reply import get_admin_reply_keyboard
 from src.control_bot.keyboards.inline import get_main_menu_keyboard, get_back_keyboard
@@ -22,9 +21,7 @@ async def cmd_start(message: types.Message):
     if not is_admin(message.from_user.id):
         return
 
-    async with async_session_factory() as session:
-        repo = SettingsRepository(session)
-        is_enabled = await repo.is_enabled()
+    is_enabled = await SettingsRepository.is_enabled()
 
     await message.answer(
         "👋 <b>Добро пожаловать в панель управления OpenVK AI Agent!</b>",
@@ -43,9 +40,7 @@ async def cb_main_menu(callback: types.CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    async with async_session_factory() as session:
-        repo = SettingsRepository(session)
-        is_enabled = await repo.is_enabled()
+    is_enabled = await SettingsRepository.is_enabled()
 
     await callback.message.edit_text(
         "Главное меню:",
@@ -59,10 +54,7 @@ async def cb_toggle_ai(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
 
-    async with async_session_factory() as session:
-        repo = SettingsRepository(session)
-        new_status = await repo.toggle_enabled()
-        await session.commit()
+    new_status = await SettingsRepository.toggle_enabled()
 
     await callback.message.edit_reply_markup(
         reply_markup=get_main_menu_keyboard(new_status)
@@ -84,9 +76,7 @@ async def msg_status(message: types.Message):
     await _show_status(message)
 
 async def _show_status(message: types.Message):
-    async with async_session_factory() as session:
-        repo = SettingsRepository(session)
-        is_enabled = await repo.is_enabled()
+    is_enabled = await SettingsRepository.is_enabled()
 
     status_text = (
         "<b>📊 Статус системы:</b>\n\n"
@@ -136,10 +126,8 @@ async def cb_menu_prompt(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return
 
-    async with async_session_factory() as session:
-        repo = SettingsRepository(session)
-        bot_settings = await repo.get_settings()
-        current_prompt = bot_settings.system_prompt if bot_settings and bot_settings.system_prompt else "Не установлен"
+    bot_settings = await SettingsRepository.get_settings()
+    current_prompt = bot_settings.system_prompt if bot_settings and bot_settings.system_prompt else "Не установлен"
 
     text = (
         f"<b>Текущий системный промпт:</b>\n<code>{current_prompt}</code>\n\n"
@@ -155,10 +143,8 @@ async def msg_prompt(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
 
-    async with async_session_factory() as session:
-        repo = SettingsRepository(session)
-        bot_settings = await repo.get_settings()
-        current_prompt = bot_settings.system_prompt if bot_settings and bot_settings.system_prompt else "Не установлен"
+    bot_settings = await SettingsRepository.get_settings()
+    current_prompt = bot_settings.system_prompt if bot_settings and bot_settings.system_prompt else "Не установлен"
 
     text = (
         f"<b>Текущий системный промпт:</b>\n<code>{current_prompt}</code>\n\n"
@@ -175,10 +161,7 @@ async def process_prompt_update(message: types.Message, state: FSMContext):
 
     new_prompt = message.text
 
-    async with async_session_factory() as session:
-        repo = SettingsRepository(session)
-        await repo.update_settings(system_prompt=new_prompt)
-        await session.commit()
+    await SettingsRepository.update_settings(system_prompt=new_prompt)
 
     await state.clear()
     await message.answer("✅ Системный промпт успешно обновлен!", reply_markup=get_back_keyboard(), parse_mode="HTML")
