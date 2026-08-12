@@ -16,6 +16,26 @@ class OpenVKPoller:
         self.gemini_service = gemini_service
         self._known_comment_counts: dict[str, int] = {}
         self._monitored_walls: list[int] = []
+        self._user_names_cache: dict[int, str] = {}
+
+    async def _get_user_first_name(self, user_id: int) -> str:
+        """Получает имя пользователя по его ID с использованием кэша."""
+        if user_id in self._user_names_cache:
+            return self._user_names_cache[user_id]
+            
+        try:
+            logger.info(f"[Poller] Fetching user name for ID {user_id}...")
+            data = await self.client.call_method("users.get", {"user_ids": user_id, "v": "5.81"})
+            items = data.get('response', [])
+            if items:
+                first_name = items[0].get('first_name')
+                if first_name:
+                    self._user_names_cache[user_id] = first_name
+                    return first_name
+        except Exception as e:
+            logger.error(f"Error fetching user name for {user_id}: {e}")
+            
+        return "Пользователь"
 
     async def run(self):
         logger.info("Starting OpenVK poller...")
@@ -57,6 +77,15 @@ class OpenVKPoller:
                         profiles = raw_notif.get('response', {}).get('profiles', [])
                         
                         logger.info(f"[Poller] Notifications response: {len(notifications)} items")
+                        
+                        # Populate names cache from notifications profiles
+                        if profiles:
+                            for p in profiles:
+                                pid = p.get('id')
+                                pfname = p.get('first_name')
+                                if pid and pfname:
+                                    self._user_names_cache[pid] = pfname
+
                         if notifications:
                             for notif in notifications:
                                 ntype = notif.get('type')
@@ -78,14 +107,11 @@ class OpenVKPoller:
                                             oldest = external_walls[0]
                                             self._monitored_walls.remove(oldest)
                                     
-                                    # Try to find sender name in profiles
+                                    # Get sender name from cache or profiles
                                     first_name = None
                                     if from_user_id:
-                                        for p in profiles:
-                                            if p.get('id') == from_user_id:
-                                                first_name = p.get('first_name')
-                                                break
-                                    reply_prefix = f"[id{from_user_id}|{first_name or 'Пользователь'}], " if from_user_id else ""
+                                        first_name = await self._get_user_first_name(from_user_id)
+                                    reply_prefix = f"[id{from_user_id}|{first_name}], " if from_user_id else ""
                                     
                                     if ntype == 'mention' and not parent:
                                         # Mention in a post
@@ -145,8 +171,9 @@ class OpenVKPoller:
                                     logger.info(f"[Poller:Wall] Comment {comment_id}: mention={is_mention}, text='{text}'")
                                     if is_mention:
                                         mention_id = f"{owner_id}_{post_id}_{comment_id}"
-                                        # Since we don't have profiles from wall posts, use safe Пользователь mention
-                                        reply_prefix = f"[id{from_user_id}|Пользователь], " if from_user_id else ""
+                                        # Resolve name dynamically with cache
+                                        first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
+                                        reply_prefix = f"[id{from_user_id}|{first_name}], " if from_user_id else ""
                                         await self._process_mention(
                                             mention_id, text, owner_id, post_id, comment_id, from_user_id,
                                             system_prompt=db_settings.system_prompt,
