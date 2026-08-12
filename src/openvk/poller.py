@@ -58,12 +58,26 @@ class OpenVKPoller:
                                 if ntype in ['reply_comment', 'mention_comments', 'mention']:
                                     feedback = notif.get('feedback', {})
                                     text = feedback.get('text', '')
-                                    owner_id = feedback.get('owner_id')
-                                    post_id = feedback.get('post_id')
-                                    comment_id = feedback.get('id')
+                                    parent = notif.get('parent')
                                     from_user_id = feedback.get('from_id')
                                     
-                                    mention_id = f"comment_{comment_id}"
+                                    if ntype == 'mention' and not parent:
+                                        # Mention in a post
+                                        owner_id = feedback.get('to_id')
+                                        post_id = feedback.get('id')
+                                        comment_id = None
+                                        mention_id = f"{owner_id}_{post_id}"
+                                    else:
+                                        # Mention/reply in a comment
+                                        comment_id = feedback.get('id')
+                                        if parent:
+                                            post_id = parent.get('id')
+                                            owner_id = parent.get('owner_id') or parent.get('to_id')
+                                        else:
+                                            owner_id = feedback.get('owner_id') or feedback.get('to_id')
+                                            post_id = feedback.get('post_id')
+                                        mention_id = f"comment_{comment_id}"
+                                        
                                     await self._process_mention(
                                         mention_id, text, owner_id, post_id, comment_id, from_user_id,
                                         system_prompt=db_settings.system_prompt
