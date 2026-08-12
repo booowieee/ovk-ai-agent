@@ -23,8 +23,7 @@ class OpenVKClient:
         
         url = f"{self.instance_url}/method/{method}"
         
-        if self._breaker.is_open():
-            raise CircuitBreakerOpen(f"Circuit breaker for {self._breaker.name} is open")
+        self._breaker.check()
             
         try:
             response = await self.state.http_client.post(url, data=params)
