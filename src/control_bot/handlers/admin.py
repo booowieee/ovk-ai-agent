@@ -24,7 +24,7 @@ async def cmd_start(message: types.Message):
     is_enabled = await SettingsRepository.is_enabled()
 
     await message.answer(
-        "👋 <b>Добро пожаловать в панель управления OpenVK AI Agent!</b>",
+        "<b>Панель управления ботом OpenVK</b>",
         reply_markup=get_admin_reply_keyboard(),
         parse_mode="HTML"
     )
@@ -69,7 +69,7 @@ async def cb_menu_status(callback: types.CallbackQuery):
     await _show_status(callback.message)
     await callback.answer()
 
-@router.message(F.text == '📊 Статус')
+@router.message(F.text == 'Статус')
 async def msg_status(message: types.Message):
     if not is_admin(message.from_user.id):
         return
@@ -79,12 +79,11 @@ async def _show_status(message: types.Message):
     is_enabled = await SettingsRepository.is_enabled()
 
     status_text = (
-        "<b>📊 Статус системы:</b>\n\n"
-        f"🤖 AI Бот: <b>{'Включен 🟢' if is_enabled else 'Выключен 🔴'}</b>\n"
-        f"🌐 URL инстанса: <code>{settings.OVK_INSTANCE_URL}</code>\n"
-        f"👤 ID пользователя: <code>{settings.OVK_USER_ID}</code>\n"
-        f"⏱ Интервал опроса: <code>{settings.POLL_INTERVAL} сек.</code>\n"
-        f"📡 Стратегия опроса: <code>{'Long Polling / Polling'}</code>\n"
+        "<b>Статус работы:</b>\n\n"
+        f"Бот: <b>{'Включен' if is_enabled else 'Выключен'}</b>\n"
+        f"Адрес: <code>{settings.OVK_INSTANCE_URL}</code>\n"
+        f"ID бота: <code>{settings.OVK_USER_ID}</code>\n"
+        f"Интервал опроса: <code>{settings.POLL_INTERVAL} сек.</code>\n"
     )
 
     if isinstance(message, types.Message):
@@ -100,18 +99,18 @@ async def cb_menu_ovk_settings(callback: types.CallbackQuery):
     await _show_ovk_settings(callback.message)
     await callback.answer()
 
-@router.message(F.text == '⚙️ Настройки OVK')
+@router.message(F.text == 'Настройки OVK')
 async def msg_ovk_settings(message: types.Message):
     if not is_admin(message.from_user.id):
         return
     await _show_ovk_settings(message)
 
 async def _show_ovk_settings(message: types.Message):
-    token_status = "Установлен ✅" if settings.OVK_ACCESS_TOKEN else "Не установлен ❌"
+    token_status = "Установлен" if settings.OVK_ACCESS_TOKEN else "Не установлен"
     
     text = (
-        "<b>⚙️ Настройки OVK:</b>\n\n"
-        f"URL инстанса: <code>{settings.OVK_INSTANCE_URL}</code>\n"
+        "<b>Настройки OVK:</b>\n\n"
+        f"Адрес инстанса: <code>{settings.OVK_INSTANCE_URL}</code>\n"
         f"ID бота: <code>{settings.OVK_USER_ID}</code>\n"
         f"Токен: <b>{token_status}</b>"
     )
@@ -138,7 +137,7 @@ async def cb_menu_prompt(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(PromptStates.waiting_for_prompt)
     await callback.answer()
 
-@router.message(F.text == '📝 Промпт')
+@router.message(F.text == 'Промпт')
 async def msg_prompt(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
@@ -164,7 +163,7 @@ async def process_prompt_update(message: types.Message, state: FSMContext):
     await SettingsRepository.update_settings(system_prompt=new_prompt)
 
     await state.clear()
-    await message.answer("✅ Системный промпт успешно обновлен!", reply_markup=get_back_keyboard(), parse_mode="HTML")
+    await message.answer("Системный промпт обновлен.", reply_markup=get_back_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data == "emergency_stop")
 async def cb_emergency_stop(callback: types.CallbackQuery, redis):
@@ -173,11 +172,11 @@ async def cb_emergency_stop(callback: types.CallbackQuery, redis):
 
     await redis.set('ovk:bot:paused', '1')
     await callback.message.edit_text(
-        "🚨 <b>АВАРИЙНАЯ ОСТАНОВКА АКТИВИРОВАНА</b> 🚨\n\nБот больше не обрабатывает сообщения.",
+        "<b>Аварийная остановка активирована.</b>\n\nБот больше не обрабатывает сообщения.",
         reply_markup=get_back_keyboard(),
         parse_mode="HTML"
     )
-    await callback.answer("Аварийная остановка активирована!")
+    await callback.answer("Аварийная остановка активирована.")
 
 @router.callback_query(F.data == "emergency_resume")
 async def cb_emergency_resume(callback: types.CallbackQuery, redis):
@@ -186,8 +185,8 @@ async def cb_emergency_resume(callback: types.CallbackQuery, redis):
 
     await redis.delete('ovk:bot:paused')
     await callback.message.edit_text(
-        "▶️ <b>Аварийная остановка снята.</b>\n\nБот снова обрабатывает сообщения.",
+        "<b>Аварийная остановка снята.</b>\n\nБот снова обрабатывает сообщения.",
         reply_markup=get_back_keyboard(),
         parse_mode="HTML"
     )
-    await callback.answer("Работа восстановлена!")
+    await callback.answer("Работа восстановлена.")

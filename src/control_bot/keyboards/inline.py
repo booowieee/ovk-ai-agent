@@ -6,7 +6,7 @@ def get_main_menu_keyboard(is_enabled: bool) -> InlineKeyboardMarkup:
     
     :param is_enabled: Текущий статус работы AI бота.
     """
-    ai_status_text = "Включен 🟢" if is_enabled else "Выключен 🔴"
+    ai_status_text = "Включен" if is_enabled else "Выключен"
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -18,31 +18,31 @@ def get_main_menu_keyboard(is_enabled: bool) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="⚙️ Настройки OVK", 
+                    text="Настройки OVK", 
                     callback_data="menu_ovk_settings"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📝 Изменить промпт", 
+                    text="Изменить промпт", 
                     callback_data="menu_prompt"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📊 Статус", 
+                    text="Статус", 
                     callback_data="menu_status"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🚨 Аварийная остановка", 
+                    text="Аварийная остановка", 
                     callback_data="emergency_stop"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="▶️ Снять аварийную остановку", 
+                    text="Снять аварийную остановку", 
                     callback_data="emergency_resume"
                 )
             ]
@@ -58,7 +58,7 @@ def get_back_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="« Назад", 
+                    text="Назад", 
                     callback_data="main_menu"
                 )
             ]

@@ -7,11 +7,11 @@ def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text='⚙️ Настройки OVK'),
-                KeyboardButton(text='📝 Промпт')
+                KeyboardButton(text='Настройки OVK'),
+                KeyboardButton(text='Промпт')
             ],
             [
-                KeyboardButton(text='📊 Статус')
+                KeyboardButton(text='Статус')
             ]
         ],
         resize_keyboard=True
