@@ -100,6 +100,8 @@ class GeminiService:
     async def generate_image(self, prompt: str) -> Optional[bytes]:
         """
         Генерирует изображение с помощью встроенных моделей Gemini Image (через generate_content).
+        В случае неудачи (например, превышения лимитов/отсутствия платной подписки) автоматически 
+        переключается на полностью бесплатный генератор Pollinations.ai (FLUX/SDXL).
         
         :param prompt: Описание изображения (желательно на английском).
         :return: Байты сгенерированного изображения или None.
@@ -111,6 +113,7 @@ class GeminiService:
         ]
         
         async with self.state.gemini_semaphore:
+            # 1. Попытка сгенерировать через Gemini
             for model_name in fallback_image_models:
                 try:
                     logger.info(f"[Gemini:Image] Attempting image generation with model {model_name}...")
@@ -135,5 +138,23 @@ class GeminiService:
                 except Exception as e:
                     logger.warning(f"[Gemini:Image] Failed to generate image with model {model_name}: {e}")
                     continue
-            logger.error("[Gemini:Image] All image generation models failed.")
+
+            # 2. Если все модели Gemini дали сбой (например, лимиты Free Tier = 0), используем бесплатный Pollinations.ai
+            try:
+                import urllib.parse
+                encoded_prompt = urllib.parse.quote(prompt)
+                url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&private=true"
+                logger.info(f"[Gemini:Image:Fallback] Falling back to free image generation via Pollinations.ai for: '{prompt}'")
+                
+                # Используем асинхронный HTTP клиент из AppState
+                response = await self.state.http_client.get(url, timeout=30.0)
+                if response.status_code == 200 and response.content:
+                    logger.info("[Gemini:Image:Fallback] Successfully generated image via Pollinations.ai")
+                    return response.content
+                else:
+                    logger.error(f"[Gemini:Image:Fallback] Pollinations.ai returned status code {response.status_code}")
+            except Exception as e:
+                logger.error(f"[Gemini:Image:Fallback] Failed to generate image via Pollinations.ai: {e}")
+
+            logger.error("[Gemini:Image] All image generation models and fallback failed.")
             return None
