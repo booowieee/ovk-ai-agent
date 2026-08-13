@@ -189,7 +189,7 @@ class GeminiService:
                 
                 for space_id in spaces:
                     try:
-                        base_url = f"https://{space_id.replace('/', '-').lower()}.hf.space"
+                        base_url = f"https://{space_id.replace('/', '-').replace('.', '-').lower()}.hf.space"
                         logger.info(f"[Gemini:Image:Premium] Attempting generation via '{space_id}' Gradio Space for: '{prompt}'")
                         trigger_url = f"{base_url}/gradio_api/call/infer"
                         

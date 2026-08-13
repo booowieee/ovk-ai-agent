@@ -599,8 +599,8 @@ class OpenVKPoller:
         try:
             response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt, image_gen_enabled=image_gen_enabled)
             if not response:
-                logger.warning(f"[Bot] Gemini returned empty response for {mention_key}. Releasing lock.")
-                await self.responder.release_lock(mention_key)
+                logger.warning(f"[Bot] Gemini returned empty response for {mention_key}. Marking as completed to prevent infinite loop.")
+                await self.responder.mark_completed(mention_key)
                 return
 
             logger.info(f"[Bot] Gemini response: '{response[:200]}'")
