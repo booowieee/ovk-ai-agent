@@ -136,12 +136,20 @@ class OpenVKPoller:
                     return
 
                 logger.info(f"[Poller:Friends] Found {len(items)} incoming friend requests. Accepting...")
-                for user_id in items:
+                for item in items:
+                    if isinstance(item, dict):
+                        uid = item.get('id') or item.get('user_id')
+                    else:
+                        uid = item
+
+                    if not uid:
+                        continue
+
                     try:
-                        res = await self.client.call_method("friends.add", {"user_id": user_id})
-                        logger.info(f"[Poller:Friends] Accepted friend request from user {user_id}. Result: {res.get('response')}")
+                        res = await self.client.call_method("friends.add", {"user_id": uid})
+                        logger.info(f"[Poller:Friends] Accepted friend request from user {uid}. Result: {res.get('response')}")
                     except Exception as e:
-                        logger.error(f"Failed to accept friend request from user {user_id}: {e}")
+                        logger.error(f"Failed to accept friend request from user {uid}: {e}")
             except Exception as e:
                 logger.error(f"Error checking friend requests: {e}")
 
