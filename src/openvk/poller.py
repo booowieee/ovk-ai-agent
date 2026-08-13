@@ -75,7 +75,7 @@ class OpenVKPoller:
         if not self._bot_username and self.client.user_id:
             try:
                 info = await self.client.get_user_info()
-                self._bot_username = info.get('screen_name') or info.get('domain')
+                self._bot_username = info.get('screen_name') or info.get('domain') or f"id{self.client.user_id}"
                 logger.info(f"[Poller] Bot username resolved: {self._bot_username}")
             except Exception as e:
                 logger.warning(f"Could not resolve bot username: {e}")

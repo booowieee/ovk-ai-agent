@@ -76,7 +76,7 @@ class OpenVKClient:
         return data.get('response', {}).get('comment_id', 0)
 
     async def get_user_info(self) -> dict:
-        params = {'user_ids': self.user_id}
+        params = {'user_ids': self.user_id, 'fields': 'screen_name,domain'}
         data = await self.call_method("users.get", params)
         items = data.get('response', [])
         return items[0] if items else {}
