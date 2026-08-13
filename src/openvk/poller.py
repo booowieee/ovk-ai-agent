@@ -167,15 +167,34 @@ class OpenVKPoller:
 
     async def _get_latest_comments(self, owner_id: int, post_id: int, limit=100) -> list:
         """
-        Получает комментарии к посту.
-        Использует фиксированный count=100 без смещений для обхода багов
-        пагинации/удалений в OpenVK API.
+        Получает последние комментарии к посту.
+        
+        Сначала делает легкий проверочный запрос (count=1), чтобы узнать
+        реальный total_count из базы OpenVK. Затем запрашивает последние limit комментов.
+        Это полностью обходит баги кэширования wall.get и оффсетов OpenVK API.
         """
         try:
-            raw = await self.client.get_comments_raw(owner_id, post_id, count=limit, offset=0)
+            # 1. Проверяем реальное количество комментариев в БД напрямую
+            raw = await self.client.get_comments_raw(owner_id, post_id, count=1, offset=0)
             response = raw.get('response', {})
-            items = response.get('items', [])
-            logger.info(f"[Wall:Comments] Post {owner_id}_{post_id}: retrieved {len(items)} active comments.")
+            total_count = response.get('count', 0)
+
+            # 2. Вычисляем оффсет на базе реального total_count
+            if total_count <= limit:
+                offset = 0
+                fetch_count = limit
+            else:
+                offset = total_count - limit
+                fetch_count = limit
+
+            # 3. Запрашиваем саму порцию комментариев
+            raw_data = await self.client.get_comments_raw(owner_id, post_id, count=fetch_count, offset=offset)
+            items = raw_data.get('response', {}).get('items', [])
+            
+            logger.info(
+                f"[Wall:Comments] Post {owner_id}_{post_id}: "
+                f"real_total_count={total_count}, query_offset={offset}, items_returned={len(items)}"
+            )
             return items
         except Exception as e:
             logger.error(f"Error fetching latest comments for {owner_id}_{post_id}: {e}", exc_info=True)
