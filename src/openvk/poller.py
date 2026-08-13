@@ -106,7 +106,7 @@ class OpenVKPoller:
 
             for notif in notifications:
                 ntype = notif.get('type')
-                if ntype not in ('mention', 'reply_comment', 'mention_comments'):
+                if ntype not in ('mention', 'reply_comment', 'mention_comments', 'wall'):
                     continue
 
                 feedback = notif.get('feedback', {})
@@ -121,12 +121,20 @@ class OpenVKPoller:
                     self._add_monitored_wall(from_user_id)
 
                 # Определяем ключи блокировки и параметры отправки
-                if ntype == 'mention' and not parent:
+                if ntype == 'wall':
+                    # Пост на стене бота
+                    owner_id = feedback.get('to_id') or self.client.user_id
+                    post_id = feedback.get('id')
+                    comment_id = None
+                    mention_key = f"post:{owner_id}_{post_id}"
+                elif ntype == 'mention' and not parent:
+                    # Упоминание в посте
                     owner_id = feedback.get('to_id') or feedback.get('owner_id')
                     post_id = feedback.get('id')
                     comment_id = None
                     mention_key = f"post:{owner_id}_{post_id}"
                 else:
+                    # Упоминание или ответ в комментарии
                     comment_id = feedback.get('id')
                     mention_key = f"comment:{comment_id}"
                     if parent:
@@ -137,9 +145,12 @@ class OpenVKPoller:
                         post_id = feedback.get('post_id')
 
                 is_reply = (ntype == 'reply_comment')
+                is_wall_post = (ntype == 'wall')
                 is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
 
-                if not is_reply and not is_mention:
+                # Отвечаем без проверки на упоминания, если это прямой реплай на коммент бота
+                # или новый пост непосредственно на стене бота
+                if not is_reply and not is_wall_post and not is_mention:
                     continue
 
                 first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
@@ -189,13 +200,31 @@ class OpenVKPoller:
                 for post in posts:
                     owner_id = post.get('owner_id') or wall_owner_id
                     post_id = post.get('id')
+                    
+                    # Проверяем, если это пост на стене бота, оставленный другим пользователем
+                    is_post_on_bot_wall = (owner_id == self.client.user_id)
+                    post_author = post.get('from_id')
+                    
+                    if is_post_on_bot_wall and post_author and post_author != self.client.user_id:
+                        # Отвечаем на новые посты на стене бота без проверки на упоминания в тексте
+                        mention_key = f"post:{owner_id}_{post_id}"
+                        text = post.get('text', '')
+                        first_name = await self._get_user_first_name(post_author) if post_author else "Пользователь"
+                        reply_prefix = f"[id{post_author}|{first_name}], " if post_author else ""
+                        
+                        await self._process_mention(
+                            mention_key, text, owner_id, post_id, None, post_author,
+                            system_prompt=db_settings.system_prompt,
+                            reply_prefix=reply_prefix
+                        )
+
                     comment_info = post.get('comments', {})
                     comment_count = comment_info.get('count', 0)
-                    post_key = f"{owner_id}_{post_id}"
 
                     if comment_count == 0:
                         continue
 
+                    # Получаем свежие комментарии напрямую через wall.getComments (без кэша)
                     comments = await self._get_latest_comments(owner_id, post_id, limit=100)
 
                     for comment in comments:
@@ -305,5 +334,5 @@ class OpenVKPoller:
                 await self.responder.release_lock(mention_key)
 
         except Exception as e:
-            logger.error(f"[Bot] Error generating/sending response for {mention_key}: {e}. Releasing lock.", exc_info=True)
+            logger.error(f"Error generating/sending response for {mention_key}: {e}. Releasing lock.", exc_info=True)
             await self.responder.release_lock(mention_key)
