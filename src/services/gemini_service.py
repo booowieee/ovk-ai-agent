@@ -140,8 +140,60 @@ class GeminiService:
                     continue
 
             # 2. Пытаемся использовать премиум-генераторы, если прописаны API-ключи в .env
-            # Вариант A: Hugging Face Inference Providers — качественный и полностью бесплатный
+            # Вариант A: Hugging Face — качественный и полностью бесплатный
             if settings.HUGGINGFACE_API_KEY:
+                # Шаг 1: Пробуем официальный Gradio Space от Black Forest Labs для генерации на настоящем FLUX.1 [schnell]
+                try:
+                    logger.info(f"[Gemini:Image:Premium] Attempting generation via BFL FLUX.1-schnell Gradio Space for: '{prompt}'")
+                    base_url = "https://black-forest-labs-flux-1-schnell.hf.space"
+                    headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
+                    trigger_url = f"{base_url}/gradio_api/call/infer"
+                    payload = {
+                        "data": [
+                            prompt,
+                            42,    # seed
+                            True,  # randomize seed
+                            1024,  # width
+                            1024,  # height
+                            4      # steps (schnell requires only 4 steps)
+                        ]
+                    }
+                    response = await self.state.http_client.post(trigger_url, headers=headers, json=payload, timeout=30.0)
+                    if response.status_code == 200:
+                        event_id = response.json().get("event_id")
+                        result_url = f"{base_url}/gradio_api/call/infer/{event_id}"
+                        
+                        image_url = None
+                        async with self.state.http_client.stream("GET", result_url, headers=headers, timeout=60.0) as stream_response:
+                            async for line in stream_response.aiter_lines():
+                                if line.startswith("data:"):
+                                    data_str = line[5:].strip()
+                                    try:
+                                        import json
+                                        data = json.loads(data_str)
+                                        if isinstance(data, list) and len(data) > 0:
+                                            first_item = data[0]
+                                            if isinstance(first_item, dict) and "url" in first_item:
+                                                image_url = first_item.get("url")
+                                                if image_url.startswith("/"):
+                                                    image_url = base_url + image_url
+                                                break
+                                    except Exception:
+                                        pass
+                        
+                        if image_url:
+                            img_res = await self.state.http_client.get(image_url, headers=headers, timeout=30.0)
+                            if img_res.status_code == 200 and img_res.content:
+                                logger.info("[Gemini:Image:Premium] Successfully generated image via BFL FLUX.1 Gradio Space")
+                                return img_res.content
+                            else:
+                                logger.warning(f"[Gemini:Image:Premium] Failed to download image from Space: {img_res.status_code}")
+                    else:
+                        logger.warning(f"[Gemini:Image:Premium] Gradio Space trigger failed with status {response.status_code}: {response.text[:200]}")
+                except Exception as e:
+                    logger.error(f"[Gemini:Image:Premium] Error generating image via BFL Gradio Space: {e}")
+
+                # Шаг 2: Вспомогательный перебор провайдеров (Together, Fal-AI, Replicate)
                 configs = [
                     ("together", "black-forest-labs/FLUX.1-schnell"),
                     ("fal-ai", "black-forest-labs/FLUX.1-schnell"),
@@ -150,16 +202,14 @@ class GeminiService:
                     ("fal-ai", "stabilityai/stable-diffusion-xl-base-1.0"),
                     ("replicate", "stabilityai/stable-diffusion-xl-base-1.0"),
                 ]
-                headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
-                payload = {"inputs": prompt}
+                payload_partner = {"inputs": prompt}
                 
                 for provider, model_id in configs:
                     try:
-                        logger.info(f"[Gemini:Image:Premium] Attempting Hugging Face ({provider}) for model '{model_id}'...")
+                        logger.info(f"[Gemini:Image:Premium] Attempting Hugging Face partner ({provider}) for model '{model_id}'...")
                         hf_url = f"https://router.huggingface.co/{provider}/models/{model_id}"
-                        response = await self.state.http_client.post(hf_url, headers=headers, json=payload, timeout=60.0)
+                        response = await self.state.http_client.post(hf_url, headers=headers, json=payload_partner, timeout=60.0)
                         if response.status_code == 200 and response.content:
-                            # Проверяем, что в ответе действительно изображение, а не JSON-ошибка
                             content_type = response.headers.get("content-type", "")
                             if "application/json" in content_type:
                                 try:
@@ -168,12 +218,12 @@ class GeminiService:
                                     continue
                                 except:
                                     pass
-                            logger.info(f"[Gemini:Image:Premium] Successfully generated image via HF ({provider}:{model_id})")
+                            logger.info(f"[Gemini:Image:Premium] Successfully generated image via HF partner ({provider}:{model_id})")
                             return response.content
                         else:
-                            logger.warning(f"[Gemini:Image:Premium] HF ({provider}:{model_id}) failed with status {response.status_code}: {response.text[:200]}")
+                            logger.warning(f"[Gemini:Image:Premium] HF partner ({provider}:{model_id}) failed with status {response.status_code}: {response.text[:200]}")
                     except Exception as e:
-                        logger.error(f"[Gemini:Image:Premium] Exception for HF ({provider}:{model_id}): {e}")
+                        logger.error(f"[Gemini:Image:Premium] Exception for HF partner ({provider}:{model_id}): {e}")
 
             # Вариант B: gen.pollinations.ai (с авторизацией и выбором модели FLUX)
             if settings.POLLINATIONS_API_KEY:
