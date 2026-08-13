@@ -588,13 +588,15 @@ class OpenVKPoller:
             await self.responder.mark_completed(mention_key)
             return
 
-        logger.info(f"[Bot] Generating response for {mention_key}...")
+        logger.info(f"[Bot] Generating response for {mention_key}. User text: '{clean_text[:100]}'. Image gen: {image_gen_enabled}")
         try:
             response = await self.gemini_service.generate(clean_text, system_prompt=final_prompt)
             if not response:
                 logger.warning(f"[Bot] Gemini returned empty response for {mention_key}. Releasing lock.")
                 await self.responder.release_lock(mention_key)
                 return
+
+            logger.info(f"[Bot] Gemini response: '{response[:200]}'")
 
             # Вырезаем технический тег и запускаем генерацию картинки
             attachments = None
