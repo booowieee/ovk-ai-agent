@@ -140,21 +140,40 @@ class GeminiService:
                     continue
 
             # 2. Пытаемся использовать премиум-генераторы, если прописаны API-ключи в .env
-            # Вариант A: Hugging Face Inference API (SDXL) — качественный и полностью бесплатный
+            # Вариант A: Hugging Face Inference Providers — качественный и полностью бесплатный
             if settings.HUGGINGFACE_API_KEY:
-                try:
-                    logger.info(f"[Gemini:Image:Premium] Attempting generation via Hugging Face Inference API (SDXL) for: '{prompt}'")
-                    hf_url = "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-xl-base-1.0"
-                    headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
-                    payload = {"inputs": prompt}
-                    response = await self.state.http_client.post(hf_url, headers=headers, json=payload, timeout=60.0)
-                    if response.status_code == 200 and response.content:
-                        logger.info("[Gemini:Image:Premium] Successfully generated image via Hugging Face FLUX")
-                        return response.content
-                    else:
-                        logger.warning(f"[Gemini:Image:Premium] Hugging Face returned status code {response.status_code}: {response.text}")
-                except Exception as e:
-                    logger.error(f"[Gemini:Image:Premium] Failed to generate image via Hugging Face: {e}")
+                configs = [
+                    ("together", "black-forest-labs/FLUX.1-schnell"),
+                    ("fal-ai", "black-forest-labs/FLUX.1-schnell"),
+                    ("replicate", "black-forest-labs/FLUX.1-schnell"),
+                    ("together", "stabilityai/stable-diffusion-xl-base-1.0"),
+                    ("fal-ai", "stabilityai/stable-diffusion-xl-base-1.0"),
+                    ("replicate", "stabilityai/stable-diffusion-xl-base-1.0"),
+                ]
+                headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
+                payload = {"inputs": prompt}
+                
+                for provider, model_id in configs:
+                    try:
+                        logger.info(f"[Gemini:Image:Premium] Attempting Hugging Face ({provider}) for model '{model_id}'...")
+                        hf_url = f"https://router.huggingface.co/{provider}/models/{model_id}"
+                        response = await self.state.http_client.post(hf_url, headers=headers, json=payload, timeout=60.0)
+                        if response.status_code == 200 and response.content:
+                            # Проверяем, что в ответе действительно изображение, а не JSON-ошибка
+                            content_type = response.headers.get("content-type", "")
+                            if "application/json" in content_type:
+                                try:
+                                    err_json = response.json()
+                                    logger.warning(f"[Gemini:Image:Premium] HF ({provider}:{model_id}) returned JSON instead of image: {err_json}")
+                                    continue
+                                except:
+                                    pass
+                            logger.info(f"[Gemini:Image:Premium] Successfully generated image via HF ({provider}:{model_id})")
+                            return response.content
+                        else:
+                            logger.warning(f"[Gemini:Image:Premium] HF ({provider}:{model_id}) failed with status {response.status_code}: {response.text[:200]}")
+                    except Exception as e:
+                        logger.error(f"[Gemini:Image:Premium] Exception for HF ({provider}:{model_id}): {e}")
 
             # Вариант B: gen.pollinations.ai (с авторизацией и выбором модели FLUX)
             if settings.POLLINATIONS_API_KEY:
