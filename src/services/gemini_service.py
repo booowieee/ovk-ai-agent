@@ -64,17 +64,41 @@ class GeminiService:
                     "[GENERATE_IMAGE: detailed English description of the image to generate]. "
                     "The description inside [GENERATE_IMAGE: ...] MUST be in English. "
                     "Do NOT say that you cannot draw or that you have no tools. You have this tool, so you MUST use it. "
-                    "Example response: 'Вот твой рисунок: [GENERATE_IMAGE: a beautiful sunset over the mountains]'"
+                    "\nIf the user requests an anime, cartoon, furry, or illustrative style, make sure the description inside "
+                    "[GENERATE_IMAGE: ...] explicitly contains style prompt keywords like 'flat 2D anime illustration, vibrant colors, "
+                    "clean lines, anime style, 2D art, illustrative' to ensure the image generator uses the correct artistic style instead of realistic photos. "
+                    "\nExample response: 'Вот твой рисунок: [GENERATE_IMAGE: a beautiful sunset over the mountains]'"
                 )
                 full_system_prompt += image_instruction
+
+            from google.genai import types
+            safety_settings = [
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+            ]
 
             for model_name in self.fallback_models:
                 try:
                     response = await self.client.aio.models.generate_content(
                         model=model_name,
                         contents=prompt,
-                        config=genai.types.GenerateContentConfig(
-                            system_instruction=full_system_prompt
+                        config=types.GenerateContentConfig(
+                            system_instruction=full_system_prompt,
+                            safety_settings=safety_settings
                         )
                     )
                     
@@ -142,29 +166,47 @@ class GeminiService:
             # 2. Пытаемся использовать премиум-генераторы, если прописаны API-ключи в .env
             # Вариант A: Hugging Face — качественный и полностью бесплатный
             if settings.HUGGINGFACE_API_KEY:
-                # Шаг 1: Пробуем официальный Gradio Space от Black Forest Labs для генерации на настоящем FLUX.1 [schnell]
-                try:
-                    logger.info(f"[Gemini:Image:Premium] Attempting generation via BFL FLUX.1-schnell Gradio Space for: '{prompt}'")
-                    base_url = "https://black-forest-labs-flux-1-schnell.hf.space"
-                    headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
-                    trigger_url = f"{base_url}/gradio_api/call/infer"
-                    payload = {
-                        "data": [
-                            prompt,
-                            42,    # seed
-                            True,  # randomize seed
-                            1024,  # width
-                            1024,  # height
-                            4      # steps (schnell requires only 4 steps)
-                        ]
-                    }
-                    response = await self.state.http_client.post(trigger_url, headers=headers, json=payload, timeout=30.0)
-                    if response.status_code == 200:
+                # Пробуем несколько альтернативных Gradio Spaces для отказоустойчивости
+                spaces = [
+                    "black-forest-labs/FLUX.1-schnell",
+                    "mukaist/FLUX.1-schnell",
+                    "evalstate/flux1_schnell"
+                ]
+                
+                headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
+                payload = {
+                    "data": [
+                        prompt,
+                        42,    # seed
+                        True,  # randomize seed
+                        1024,  # width
+                        1024,  # height
+                        4      # steps (schnell requires only 4 steps)
+                    ]
+                }
+                
+                generated_image_bytes = None
+                
+                for space_id in spaces:
+                    try:
+                        base_url = f"https://{space_id.replace('/', '-').lower()}.hf.space"
+                        logger.info(f"[Gemini:Image:Premium] Attempting generation via '{space_id}' Gradio Space for: '{prompt}'")
+                        trigger_url = f"{base_url}/gradio_api/call/infer"
+                        
+                        response = await self.state.http_client.post(trigger_url, headers=headers, json=payload, timeout=30.0)
+                        if response.status_code != 200:
+                            logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' trigger failed with status {response.status_code}")
+                            continue
+                            
                         event_id = response.json().get("event_id")
                         result_url = f"{base_url}/gradio_api/call/infer/{event_id}"
                         
                         image_url = None
                         async with self.state.http_client.stream("GET", result_url, headers=headers, timeout=60.0) as stream_response:
+                            if stream_response.status_code != 200:
+                                logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' stream failed with status {stream_response.status_code}")
+                                continue
+                                
                             async for line in stream_response.aiter_lines():
                                 if line.startswith("data:"):
                                     data_str = line[5:].strip()
@@ -184,14 +226,19 @@ class GeminiService:
                         if image_url:
                             img_res = await self.state.http_client.get(image_url, headers=headers, timeout=30.0)
                             if img_res.status_code == 200 and img_res.content:
-                                logger.info("[Gemini:Image:Premium] Successfully generated image via BFL FLUX.1 Gradio Space")
-                                return img_res.content
+                                logger.info(f"[Gemini:Image:Premium] Successfully generated image via Gradio Space '{space_id}'")
+                                generated_image_bytes = img_res.content
+                                break
                             else:
-                                logger.warning(f"[Gemini:Image:Premium] Failed to download image from Space: {img_res.status_code}")
-                    else:
-                        logger.warning(f"[Gemini:Image:Premium] Gradio Space trigger failed with status {response.status_code}: {response.text[:200]}")
-                except Exception as e:
-                    logger.error(f"[Gemini:Image:Premium] Error generating image via BFL Gradio Space: {e}")
+                                logger.warning(f"[Gemini:Image:Premium] Failed to download image from Space '{space_id}': {img_res.status_code}")
+                        else:
+                            logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' stream finished without image URL")
+                            
+                    except Exception as e:
+                        logger.error(f"[Gemini:Image:Premium] Error with Gradio Space '{space_id}': {e}")
+                        
+                if generated_image_bytes:
+                    return generated_image_bytes
 
                 # Шаг 2: Вспомогательный перебор провайдеров (Together, Fal-AI, Replicate)
                 configs = [
