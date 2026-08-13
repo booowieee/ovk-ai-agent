@@ -9,18 +9,24 @@ class OpenVKResponder:
         self.client = client
         self.redis = redis
 
-    async def is_already_processed(self, mention_id: str) -> bool:
+    async def is_already_processed(self, mention_key: str) -> bool:
         """
         Проверяет, обрабатывается ли упоминание.
-        Ставит processing-lock с TTL 1 час (запас на задержки Gemini API).
+        Ставит processing-lock с TTL 1 час.
         """
-        key = f"ovk:mention:{mention_id}"
+        key = f"ovk:lock:{mention_key}"
         is_new = await self.redis.set(key, "processing", nx=True, ex=3600)
         return not bool(is_new)
 
-    async def mark_completed(self, mention_id: str):
-        """Помечает упоминание как обработанное. TTL 7 дней."""
-        key = f"ovk:mention:{mention_id}"
+    async def release_lock(self, mention_key: str):
+        """Снимает временный lock в случае ошибки обработки/отправки."""
+        key = f"ovk:lock:{mention_key}"
+        await self.redis.delete(key)
+        logger.info(f"[Responder] Lock released for key: {mention_key}")
+
+    async def mark_completed(self, mention_key: str):
+        """Помечает упоминание как успешно обработанное. TTL 7 дней."""
+        key = f"ovk:lock:{mention_key}"
         await self.redis.set(key, "completed", ex=604800)
 
     async def reply_to_comment(self, owner_id: int, post_id: int, comment_id: int,

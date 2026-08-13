@@ -11,14 +11,14 @@ from src.openvk.mention_parser import clean_mention_from_text, is_mention_of_use
 
 class OpenVKPoller:
     """
-    Поллер стен OpenVK.
+    Универсальный поллер OpenVK.
 
-    Единственная стратегия обнаружения упоминаний - опрос стен (wall polling).
-    notifications.get используется только для обнаружения новых стен,
-    на которых упомянули бота. Обработка идет только через wall polling.
+    Использует две параллельные стратегии:
+    1. Проверка notifications.get (реалтайм, основной триггер упоминаний и реплаев)
+    2. Опрос стен (wall polling, резервный фолбек на случай лагов/ограничений API)
 
-    Дедупликация основана на ID комментариев (хранятся в Redis),
-    а не на подсчете количества комментариев.
+    Дедупликация полностью вынесена на уровень глобальных ID комментариев/постов
+    в Redis, что исключает дублирование ответов.
     """
 
     def __init__(self, state: AppState, client: OpenVKClient, responder: OpenVKResponder, gemini_service):
@@ -48,15 +48,11 @@ class OpenVKPoller:
 
                 logger.info(f"[Poller] Tick. walls={self._monitored_walls}")
 
-                # Шаг 1: notifications только для обнаружения стен
-                await self._discover_walls()
+                # 1. Сначала обрабатываем уведомления (мгновенная реакция)
+                await self._process_notifications(db_settings)
 
-                # Шаг 2: опрос стен на предмет новых упоминаний
-                for wall_id in list(self._monitored_walls):
-                    try:
-                        await self._poll_wall(wall_id, db_settings)
-                    except Exception as e:
-                        logger.error(f"Error polling wall {wall_id}: {e}")
+                # 2. Опрашиваем стены (резервный фолбек)
+                await self._poll_walls(db_settings)
 
             except Exception as e:
                 logger.error(f"Error in poller loop: {e}")
@@ -76,7 +72,7 @@ class OpenVKPoller:
             self.state.poll_interval = db_settings.poll_interval
 
     def _add_monitored_wall(self, wall_id: int):
-        """Добавляет стену в список для мониторинга. Максимум 5 внешних стен."""
+        """Добавляет стену в список мониторинга. Ограничиваем список 5 внешними пользователями."""
         if wall_id in self._monitored_walls:
             return
         self._monitored_walls.append(wall_id)
@@ -84,12 +80,12 @@ class OpenVKPoller:
         while len(external) > 5:
             oldest = external.pop(0)
             self._monitored_walls.remove(oldest)
-        logger.info(f"[Poller] Added wall {wall_id}. Active: {self._monitored_walls}")
+        logger.info(f"[Poller] Added wall {wall_id} to monitoring. Active walls: {self._monitored_walls}")
 
-    async def _discover_walls(self):
-        """Читает notifications.get только для обнаружения стен с упоминаниями бота."""
+    async def _process_notifications(self, db_settings):
+        """Обрабатывает входящие уведомления в реальном времени."""
         try:
-            raw = await self.client.call_method("notifications.get", {"count": 10})
+            raw = await self.client.call_method("notifications.get", {"count": 15})
             notifications = raw.get('response', {}).get('items', [])
             profiles = raw.get('response', {}).get('profiles', [])
 
@@ -101,93 +97,107 @@ class OpenVKPoller:
 
             for notif in notifications:
                 ntype = notif.get('type')
-                if ntype in ('mention', 'reply_comment', 'mention_comments'):
-                    feedback = notif.get('feedback', {})
-                    from_id = feedback.get('from_id')
-                    if from_id and from_id != self.client.user_id:
-                        self._add_monitored_wall(from_id)
-
-        except Exception as e:
-            error_msg = str(e)
-            if "1289" in error_msg or "EventDB" in error_msg:
-                pass
-            else:
-                logger.warning(f"Notifications check failed (non-critical): {e}")
-
-    async def _poll_wall(self, wall_owner_id: int, db_settings):
-        """Опрашивает стену на предмет новых комментариев с упоминанием бота."""
-        posts = await self.client.get_wall_posts(wall_owner_id, filter='all', count=5)
-
-        for post in posts:
-            owner_id = post.get('owner_id') or wall_owner_id
-            post_id = post.get('id')
-            comment_count = post.get('comments', {}).get('count', 0)
-            post_key = f"{owner_id}_{post_id}"
-
-            if comment_count == 0:
-                self._known_counts[post_key] = 0
-                continue
-
-            # Оптимизация: если count не изменился, не дергаем API комментариев
-            old_count = self._known_counts.get(post_key)
-            self._known_counts[post_key] = comment_count
-            if old_count is not None and comment_count <= old_count:
-                continue
-
-            # Получаем ID последнего обработанного комментария из Redis
-            redis_key = f"ovk:post:{post_key}:last_id"
-            raw = await self.responder.redis.get(redis_key)
-            last_seen_id = int(raw) if raw else 0
-
-            # Первый раз видим пост: ставим базовую отметку, старые не обрабатываем
-            if last_seen_id == 0:
-                baseline_comments = await self.client.get_comments(
-                    owner_id, post_id,
-                    count=1,
-                    offset=max(0, comment_count - 1)
-                )
-                baseline_id = baseline_comments[-1].get('id', 0) if baseline_comments else 0
-                await self.responder.redis.set(redis_key, str(baseline_id))
-                logger.info(f"[Wall] {post_key}: baseline ID={baseline_id} ({comment_count} comments)")
-                continue
-
-            # Забираем последние комментарии
-            fetch_count = min(20, comment_count)
-            offset = max(0, comment_count - fetch_count)
-            comments = await self.client.get_comments(owner_id, post_id, count=fetch_count, offset=offset)
-
-            max_id = last_seen_id
-            for comment in comments:
-                cid = comment.get('id', 0)
-
-                if cid <= last_seen_id:
+                if ntype not in ('mention', 'reply_comment', 'mention_comments'):
                     continue
-                if cid > max_id:
-                    max_id = cid
 
-                from_user_id = comment.get('from_id')
+                feedback = notif.get('feedback', {})
+                parent = notif.get('parent', {})
+                from_user_id = feedback.get('from_id')
 
-                # Пропускаем собственные комментарии бота
+                # Пропускаем уведомления о собственных действиях
                 if from_user_id == self.client.user_id:
                     continue
 
-                text = comment.get('text', '')
-                if not is_mention_of_user(text, self.client.user_id):
+                # Добавляем автора в список мониторинга стен
+                if from_user_id:
+                    self._add_monitored_wall(from_user_id)
+
+                text = feedback.get('text', '')
+
+                # Определяем ключи блокировки и параметры отправки
+                if ntype == 'mention' and not parent:
+                    # Упоминание в посте
+                    owner_id = feedback.get('to_id') or feedback.get('owner_id')
+                    post_id = feedback.get('id')
+                    comment_id = None
+                    mention_key = f"post:{owner_id}_{post_id}"
+                else:
+                    # Упоминание или ответ в комментарии
+                    comment_id = feedback.get('id')
+                    mention_key = f"comment:{comment_id}"
+                    if parent:
+                        post_id = parent.get('id')
+                        owner_id = parent.get('owner_id') or parent.get('to_id')
+                    else:
+                        owner_id = feedback.get('owner_id') or feedback.get('to_id')
+                        post_id = feedback.get('post_id')
+
+                # Если это не прямой реплай на коммент бота, проверяем наличие упоминания в тексте
+                is_reply = (ntype == 'reply_comment')
+                if not is_reply and not is_mention_of_user(text, self.client.user_id):
                     continue
 
-                mention_id = f"{owner_id}_{post_id}_{cid}"
                 first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
                 reply_prefix = f"[id{from_user_id}|{first_name}], " if from_user_id else ""
 
                 await self._process_mention(
-                    mention_id, text, owner_id, post_id, cid, from_user_id,
+                    mention_key, text, owner_id, post_id, comment_id, from_user_id,
                     system_prompt=db_settings.system_prompt,
                     reply_prefix=reply_prefix
                 )
 
-            if max_id > last_seen_id:
-                await self.responder.redis.set(redis_key, str(max_id))
-                logger.info(f"[Wall] {post_key}: last_id {last_seen_id} -> {max_id}")
+        except Exception as e:
+            logger.error(f"Error in notifications processing: {e}")
+
+    async def _poll_walls(self, db_settings):
+        """Опрашивает стены на предмет новых комментариев с упоминанием бота."""
+        for wall_owner_id in list(self._monitored_walls):
+            try:
+                posts = await self.client.get_wall_posts(wall_owner_id, filter='all', count=5)
+                for post in posts:
+                    owner_id = post.get('owner_id') or wall_owner_id
+                    post_id = post.get('id')
+                    comment_info = post.get('comments', {})
+                    comment_count = comment_info.get('count', 0)
+                    post_key = f"{owner_id}_{post_id}"
+
+                    if comment_count == 0:
+                        self._known_counts[post_key] = 0
+                        continue
+
+                    old_count = self._known_counts.get(post_key)
+                    self._known_counts[post_key] = comment_count
+                    if old_count is not None and comment_count <= old_count:
+                        continue
+
+                    # Запрашиваем последние комментарии
+                    fetch_count = min(20, comment_count)
+                    offset = max(0, comment_count - fetch_count)
+                    comments = await self.client.get_comments(owner_id, post_id, count=fetch_count, offset=offset)
+
+                    for comment in comments:
+                        cid = comment.get('id')
+                        from_user_id = comment.get('from_id')
+
+                        # Пропускаем комментарии от самого бота
+                        if from_user_id == self.client.user_id:
+                            continue
+
+                        text = comment.get('text', '')
+                        if not is_mention_of_user(text, self.client.user_id):
+                            continue
+
+                        mention_key = f"comment:{cid}"
+                        first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
+                        reply_prefix = f"[id{from_user_id}|{first_name}], " if from_user_id else ""
+
+                        await self._process_mention(
+                            mention_key, text, owner_id, post_id, cid, from_user_id,
+                            system_prompt=db_settings.system_prompt,
+                            reply_prefix=reply_prefix
+                        )
+            except Exception as e:
+                logger.error(f"Error polling wall {wall_owner_id}: {e}")
 
     async def _get_user_first_name(self, user_id: int) -> str:
         if user_id in self._user_names_cache:
@@ -204,38 +214,74 @@ class OpenVKPoller:
             logger.error(f"Error fetching user name for {user_id}: {e}")
         return "Пользователь"
 
-    async def _process_mention(self, mention_id: str, text: str, owner_id: int, post_id: int,
+    async def _find_post_id_for_comment(self, comment_id: int, from_user_id: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+        """Ищет owner_id и post_id для комментария на стенах."""
+        possible_owners = []
+        if from_user_id:
+            possible_owners.append(from_user_id)
+        possible_owners.append(self.client.user_id)
+
+        for owner in possible_owners:
+            try:
+                logger.info(f"[Poller] Searching comment {comment_id} on wall of {owner}...")
+                posts = await self.client.get_wall_posts(owner_id=owner, count=10)
+                for post in posts:
+                    pid = post.get('id')
+                    comments = await self.client.get_comments(owner_id=owner, post_id=pid, count=50)
+                    for comment in comments:
+                        if comment.get('id') == comment_id:
+                            logger.info(f"[Poller] Found comment {comment_id} on wall of {owner} under post {pid}")
+                            return owner, pid
+            except Exception as e:
+                logger.error(f"Error searching comment {comment_id} on wall {owner}: {e}")
+        return None, None
+
+    async def _process_mention(self, mention_key: str, text: str, owner_id: Optional[int], post_id: Optional[int],
                                comment_id: Optional[int] = None, from_user_id: Optional[int] = None,
                                system_prompt: Optional[str] = None, reply_prefix: Optional[str] = None):
-        if await self.responder.is_already_processed(mention_id):
+        if await self.responder.is_already_processed(mention_key):
             return
+
+        # Если owner_id или post_id отсутствует, ищем их по стенам
+        if (owner_id is None or post_id is None) and comment_id is not None:
+            logger.info(f"[Poller] Post/owner ID missing for key {mention_key}. Searching...")
+            owner_id, post_id = await self._find_post_id_for_comment(comment_id, from_user_id)
+            if owner_id is None or post_id is None:
+                logger.warning(f"[Poller] Could not resolve post/owner ID for comment {comment_id}. Releasing lock.")
+                await self.responder.release_lock(mention_key)
+                return
 
         clean_text = clean_mention_from_text(text, self.client.user_id)
         if not clean_text:
-            await self.responder.mark_completed(mention_id)
+            logger.info(f"[Poller] Mention {mention_key} text is empty after cleaning. Marking completed.")
+            await self.responder.mark_completed(mention_key)
             return
 
-        logger.info(f"[Bot] Generating reply for {mention_id}")
-        response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt)
+        logger.info(f"[Bot] Generating response for {mention_key}...")
+        try:
+            response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt)
+            if not response:
+                logger.warning(f"[Bot] Gemini returned empty response for {mention_key}. Releasing lock.")
+                await self.responder.release_lock(mention_key)
+                return
 
-        if not response:
-            logger.warning(f"[Bot] Gemini returned empty for {mention_id}, will retry next tick")
-            # НЕ помечаем completed, чтобы повторить попытку в следующем тике
-            return
+            if reply_prefix:
+                response = f"{reply_prefix}{response}"
 
-        if reply_prefix:
-            response = f"{reply_prefix}{response}"
+            guid = int(hashlib.md5(mention_key.encode()).hexdigest()[:8], 16)
 
-        # Генерируем guid для защиты от дублей при сетевых ретраях
-        guid = int(hashlib.md5(mention_id.encode()).hexdigest()[:8], 16)
+            if comment_id is not None:
+                result = await self.responder.reply_to_comment(owner_id, post_id, comment_id, response, guid=guid)
+            else:
+                result = await self.responder.reply_to_post(owner_id, post_id, response, guid=guid)
 
-        if comment_id is not None:
-            result = await self.responder.reply_to_comment(owner_id, post_id, comment_id, response, guid=guid)
-        else:
-            result = await self.responder.reply_to_post(owner_id, post_id, response, guid=guid)
+            if result is not None:
+                await self.responder.mark_completed(mention_key)
+                logger.info(f"[Bot] Successfully replied to {mention_key}")
+            else:
+                logger.error(f"[Bot] Failed to send reply to OpenVK for {mention_key}. Releasing lock.")
+                await self.responder.release_lock(mention_key)
 
-        if result is not None:
-            await self.responder.mark_completed(mention_id)
-            logger.info(f"[Bot] Replied to {mention_id}")
-        else:
-            logger.warning(f"[Bot] Failed to send reply for {mention_id}, will retry")
+        except Exception as e:
+            logger.error(f"[Bot] Error generating/sending response for {mention_key}: {e}. Releasing lock.")
+            await self.responder.release_lock(mention_key)
