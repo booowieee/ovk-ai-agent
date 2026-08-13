@@ -23,12 +23,16 @@ def is_admin(user_id: int) -> bool:
         logger.info(f"[Telegram Bot] Message verified from admin user (ID: {user_id}).")
     return is_adm
 
+from redis.asyncio import Redis
+
 @router.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, redis: Redis):
     if not is_admin(message.from_user.id):
         return
 
     is_enabled = await SettingsRepository.is_enabled()
+    img_gen = await redis.get('ovk:settings:image_generation')
+    image_gen_enabled = (img_gen == b'1' or img_gen == '1')
 
     await message.answer(
         "<b>Панель управления ботом OpenVK</b>",
@@ -37,57 +41,80 @@ async def cmd_start(message: types.Message):
     )
     await message.answer(
         "Главное меню:",
-        reply_markup=get_main_menu_keyboard(is_enabled),
+        reply_markup=get_main_menu_keyboard(is_enabled, image_gen_enabled),
         parse_mode="HTML"
     )
 
 @router.callback_query(F.data == "main_menu")
-async def cb_main_menu(callback: types.CallbackQuery, state: FSMContext):
+async def cb_main_menu(callback: types.CallbackQuery, state: FSMContext, redis: Redis):
     if not is_admin(callback.from_user.id):
         return
 
     await state.clear()
     is_enabled = await SettingsRepository.is_enabled()
+    img_gen = await redis.get('ovk:settings:image_generation')
+    image_gen_enabled = (img_gen == b'1' or img_gen == '1')
 
     await callback.message.edit_text(
         "Главное меню:",
-        reply_markup=get_main_menu_keyboard(is_enabled),
+        reply_markup=get_main_menu_keyboard(is_enabled, image_gen_enabled),
         parse_mode="HTML"
     )
     await callback.answer()
 
 @router.callback_query(F.data == "toggle_ai")
-async def cb_toggle_ai(callback: types.CallbackQuery):
+async def cb_toggle_ai(callback: types.CallbackQuery, redis: Redis):
     if not is_admin(callback.from_user.id):
         return
 
     new_status = await SettingsRepository.toggle_enabled()
+    img_gen = await redis.get('ovk:settings:image_generation')
+    image_gen_enabled = (img_gen == b'1' or img_gen == '1')
 
     await callback.message.edit_reply_markup(
-        reply_markup=get_main_menu_keyboard(new_status)
+        reply_markup=get_main_menu_keyboard(new_status, image_gen_enabled)
     )
     await callback.answer(f"Статус изменен: {'Включен' if new_status else 'Выключен'}")
 
-@router.callback_query(F.data == "menu_status")
-async def cb_menu_status(callback: types.CallbackQuery):
+@router.callback_query(F.data == "toggle_image_gen")
+async def cb_toggle_image_gen(callback: types.CallbackQuery, redis: Redis):
     if not is_admin(callback.from_user.id):
         return
 
-    await _show_status(callback.message)
+    img_gen = await redis.get('ovk:settings:image_generation')
+    new_status = not (img_gen == b'1' or img_gen == '1')
+    await redis.set('ovk:settings:image_generation', '1' if new_status else '0')
+
+    is_enabled = await SettingsRepository.is_enabled()
+
+    await callback.message.edit_reply_markup(
+        reply_markup=get_main_menu_keyboard(is_enabled, new_status)
+    )
+    await callback.answer(f"Генерация картинок: {'Включена' if new_status else 'Выключена'}")
+
+@router.callback_query(F.data == "menu_status")
+async def cb_menu_status(callback: types.CallbackQuery, redis: Redis):
+    if not is_admin(callback.from_user.id):
+        return
+
+    await _show_status(callback.message, redis)
     await callback.answer()
 
 @router.message(F.text == 'Статус')
-async def msg_status(message: types.Message):
+async def msg_status(message: types.Message, redis: Redis):
     if not is_admin(message.from_user.id):
         return
-    await _show_status(message)
+    await _show_status(message, redis)
 
-async def _show_status(message: types.Message):
+async def _show_status(message: types.Message, redis: Redis):
     is_enabled = await SettingsRepository.is_enabled()
+    img_gen = await redis.get('ovk:settings:image_generation')
+    image_gen_enabled = (img_gen == b'1' or img_gen == '1')
 
     status_text = (
         "<b>Статус работы:</b>\n\n"
         f"Бот: <b>{'Включен' if is_enabled else 'Выключен'}</b>\n"
+        f"Генерация картинок: <b>{'Включена' if image_gen_enabled else 'Выключена'}</b>\n"
         f"Адрес: <code>{settings.OVK_INSTANCE_URL}</code>\n"
         f"ID бота: <code>{settings.OVK_USER_ID}</code>\n"
         f"Интервал опроса: <code>{settings.POLL_INTERVAL} сек.</code>\n"

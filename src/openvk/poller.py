@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import random
+import re
 import time
 from typing import Optional
 from src.core.app_state import AppState
@@ -567,6 +568,20 @@ class OpenVKPoller:
                 await self.responder.release_lock(mention_key)
                 return
 
+        # Проверяем статус генерации картинок в Redis
+        img_gen = await self.responder.redis.get('ovk:settings:image_generation')
+        image_gen_enabled = (img_gen == b'1' or img_gen == '1')
+
+        final_prompt = system_prompt
+        if image_gen_enabled:
+            image_instruction = (
+                "\nЕсли пользователь просит тебя что-то нарисовать, сгенерировать картинку, изображение или арт "
+                "(например: 'нарисуй кота', 'покажи закат'), напиши короткий текстовый ответ в своем стиле, "
+                "но в самом конце ответа обязательно прикрепи технический тег строго в следующем формате: "
+                "[GENERATE_IMAGE: детальное описание промпта для рисования на английском языке]. Промпт пиши обязательно на английском."
+            )
+            final_prompt = (final_prompt or "") + image_instruction
+
         clean_text = clean_mention_from_text(text, self.client.user_id, self._bot_username)
 
         if not clean_text:
@@ -575,11 +590,28 @@ class OpenVKPoller:
 
         logger.info(f"[Bot] Generating response for {mention_key}...")
         try:
-            response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt)
+            response = await self.gemini_service.generate(clean_text, system_prompt=final_prompt)
             if not response:
                 logger.warning(f"[Bot] Gemini returned empty response for {mention_key}. Releasing lock.")
                 await self.responder.release_lock(mention_key)
                 return
+
+            # Вырезаем технический тег и запускаем генерацию картинки
+            attachments = None
+            if image_gen_enabled and "[GENERATE_IMAGE:" in response:
+                match = re.search(r'\[GENERATE_IMAGE:\s*([^\]]+)\]', response)
+                if match:
+                    image_prompt = match.group(1).strip()
+                    response = re.sub(r'\[GENERATE_IMAGE:\s*[^\]]+\]', '', response).strip()
+                    
+                    logger.info(f"[Bot] Generating AI image for prompt: '{image_prompt}'")
+                    try:
+                        image_bytes = await self.gemini_service.generate_image(image_prompt)
+                        if image_bytes:
+                            attachments = await self.client.upload_wall_photo(image_bytes)
+                            logger.info(f"[Bot] Successfully uploaded AI image to OpenVK: {attachments}")
+                    except Exception as e:
+                        logger.error(f"[Bot] Failed to generate/upload AI image: {e}")
 
             if reply_prefix:
                 response = f"{reply_prefix}{response}"
@@ -587,9 +619,9 @@ class OpenVKPoller:
             guid = int(hashlib.md5(mention_key.encode()).hexdigest()[:8], 16)
 
             if comment_id is not None:
-                result = await self.responder.reply_to_comment(owner_id, post_id, comment_id, response, guid=guid)
+                result = await self.responder.reply_to_comment(owner_id, post_id, comment_id, response, guid=guid, attachments=attachments)
             else:
-                result = await self.responder.reply_to_post(owner_id, post_id, response, guid=guid)
+                result = await self.responder.reply_to_post(owner_id, post_id, response, guid=guid, attachments=attachments)
 
             if result is not None:
                 await self.responder.mark_completed(mention_key)

@@ -83,3 +83,31 @@ class GeminiService:
 
             logger.error("Все модели Gemini завершились с ошибкой.")
             return None
+
+    async def generate_image(self, prompt: str) -> Optional[bytes]:
+        """
+        Генерирует изображение с помощью Google Imagen 3.
+        
+        :param prompt: Описание изображения (желательно на английском).
+        :return: Байты сгенерированного JPEG изображения или None.
+        """
+        async with self.state.gemini_semaphore:
+            try:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.models.generate_images(
+                        model='imagen-3.0-generate-002',
+                        prompt=prompt,
+                        config=genai.types.GenerateImagesConfig(
+                            number_of_images=1,
+                            output_mime_type="image/jpeg",
+                            aspect_ratio="1:1"
+                        )
+                    )
+                )
+                if result and result.generated_images:
+                    return result.generated_images[0].image.image_bytes
+            except Exception as e:
+                logger.error(f"Error in Gemini Image Generation (Imagen 3): {e}", exc_info=True)
+            return None

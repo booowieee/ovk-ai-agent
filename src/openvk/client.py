@@ -66,12 +66,15 @@ class OpenVKClient:
         return items[0] if items else None
 
     async def create_comment(self, owner_id: int, post_id: int, message: str,
-                             reply_to_comment: int = None, guid: int = None) -> int:
+                             reply_to_comment: int = None, guid: int = None,
+                             attachments: str = None) -> int:
         params = {'owner_id': owner_id, 'post_id': post_id, 'message': message}
         if reply_to_comment is not None:
             params['reply_to_comment'] = reply_to_comment
         if guid is not None:
             params['guid'] = guid
+        if attachments is not None:
+            params['attachments'] = attachments
         data = await self.call_method("wall.createComment", params)
         return data.get('response', {}).get('comment_id', 0)
 
@@ -80,3 +83,30 @@ class OpenVKClient:
         data = await self.call_method("users.get", params)
         items = data.get('response', [])
         return items[0] if items else {}
+
+    async def upload_wall_photo(self, file_content: bytes, filename: str = "photo.jpg") -> str:
+        """
+        Загружает картинку на сервер OpenVK и возвращает строку вложения (например, photo123_456).
+        """
+        server_data = await self.call_method("photos.getWallUploadServer")
+        upload_url = server_data.get('response', {}).get('upload_url')
+        if not upload_url:
+            raise Exception("Failed to get wall upload server URL")
+
+        files = {'photo': (filename, file_content, 'image/jpeg')}
+        response = await self.state.http_client.post(upload_url, files=files)
+        response.raise_for_status()
+        upload_result = response.json()
+
+        save_params = {
+            "server": upload_result.get("server"),
+            "photo": upload_result.get("photo"),
+            "hash": upload_result.get("hash")
+        }
+        save_data = await self.call_method("photos.saveWallPhoto", save_params)
+        photos = save_data.get('response', [])
+        if not photos:
+            raise Exception("Failed to save uploaded wall photo")
+
+        photo = photos[0]
+        return f"photo{photo.get('owner_id')}_{photo.get('id')}"

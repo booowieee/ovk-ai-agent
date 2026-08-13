@@ -1,12 +1,14 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-def get_main_menu_keyboard(is_enabled: bool) -> InlineKeyboardMarkup:
+def get_main_menu_keyboard(is_enabled: bool, image_gen_enabled: bool = False) -> InlineKeyboardMarkup:
     """
     Создает и возвращает главное инлайн меню.
     
     :param is_enabled: Текущий статус работы AI бота.
+    :param image_gen_enabled: Текущий статус генерации изображений.
     """
     ai_status_text = "Включен" if is_enabled else "Выключен"
+    image_gen_status_text = "Включена" if image_gen_enabled else "Выключена"
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -14,6 +16,12 @@ def get_main_menu_keyboard(is_enabled: bool) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=f"AI Бот: {ai_status_text}", 
                     callback_data="toggle_ai"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🖼 Генерация картинок: {image_gen_status_text}", 
+                    callback_data="toggle_image_gen"
                 )
             ],
             [
