@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import random
 import time
 from typing import Optional
 from src.core.app_state import AppState
@@ -14,15 +15,16 @@ class OpenVKPoller:
     """
     Универсальный поллер OpenVK.
 
-    Использует две параллельные стратегии:
+    Использует три параллельные стратегии:
     1. Проверка notifications.get (реалтайм, основной триггер упоминаний и реплаев)
     2. Опрос стен (wall polling, резервный фолбек на случай лагов/ограничений API)
+    3. Обработка личных сообщений (messages, ответы на входящие ЛС)
 
     Дополнительно поддерживает:
     - Вечный онлайн (обновляется раз в 4 минуты)
     - Автодобавление всех входящих заявок в друзья (проверяется раз в минуту)
 
-    Дедупликация полностью вынесена на уровень глобальных ID комментариев/постов
+    Дедупликация полностью вынесена на уровень глобальных ID комментариев/постов/сообщений
     в Redis, что исключает дублирование ответов.
     """
 
@@ -61,10 +63,13 @@ class OpenVKPoller:
                 # 2. Опрашиваем стены
                 await self._poll_walls(db_settings)
 
-                # 3. Вечный статус онлайн
+                # 3. Обрабатываем личные сообщения (ЛС)
+                await self._process_private_messages(db_settings)
+
+                # 4. Вечный статус онлайн
                 await self._maintain_online()
 
-                # 4. Автодобавление в друзья
+                # 5. Автодобавление в друзья
                 await self._auto_accept_friends()
 
             except Exception as e:
@@ -318,6 +323,87 @@ class OpenVKPoller:
                         )
             except Exception as e:
                 logger.error(f"Error polling wall {wall_owner_id}: {e}", exc_info=True)
+
+    async def _process_private_messages(self, db_settings):
+        """Обрабатывает входящие личные сообщения (ЛС) от пользователей."""
+        try:
+            # Запрашиваем непрочитанные диалоги. Пытаемся вызвать messages.getConversations
+            try:
+                raw = await self.client.call_method("messages.getConversations", {
+                    "filter": "unread",
+                    "count": 20
+                })
+                conversations = raw.get('response', {}).get('items', [])
+            except Exception as e:
+                logger.warning(f"[PM] messages.getConversations failed, trying messages.getDialogs fallback: {e}")
+                raw = await self.client.call_method("messages.getDialogs", {
+                    "unread": 1,
+                    "count": 20
+                })
+                conversations = raw.get('response', {}).get('items', [])
+
+            for item in conversations:
+                # В getConversations структура: item.conversation, item.last_message
+                # В getDialogs структура: item.message
+                msg = item.get('last_message') or item.get('message')
+                if not msg:
+                    continue
+
+                peer_id = msg.get('peer_id') or msg.get('user_id') or msg.get('from_id')
+                from_id = msg.get('from_id') or msg.get('user_id')
+                text = msg.get('text') or msg.get('body', '')
+                msg_id = msg.get('id')
+
+                # Пропускаем сообщения от самого себя
+                if from_id == self.client.user_id:
+                    continue
+
+                if not peer_id or not msg_id:
+                    continue
+
+                # Проверяем уникальность блокировки в Redis
+                mention_key = f"pm:{peer_id}_{msg_id}"
+                is_proc = await self.responder.is_already_processed(mention_key)
+                if is_proc:
+                    continue
+
+                logger.info(f"[PM] Received unread message from user {from_id} (msg_id={msg_id}): '{text}'")
+
+                # Сразу помечаем диалог как прочитанный, чтобы не обрабатывать повторно
+                try:
+                    await self.client.call_method("messages.markAsRead", {"peer_id": peer_id})
+                except Exception as e:
+                    logger.warning(f"[PM] Failed to mark message as read: {e}")
+
+                # Генерируем ответ
+                try:
+                    response = await self.gemini_service.generate(text, system_prompt=db_settings.system_prompt)
+                    if not response:
+                        logger.warning(f"[PM] Gemini returned empty response for message {msg_id}. Releasing lock.")
+                        await self.responder.release_lock(mention_key)
+                        continue
+
+                    # Отправляем личное сообщение
+                    random_id = random.randint(1, 2**31 - 1)
+                    res = await self.client.call_method("messages.send", {
+                        "peer_id": peer_id,
+                        "message": response,
+                        "random_id": random_id
+                    })
+
+                    if res.get('response') or res.get('error') is None:
+                        await self.responder.mark_completed(mention_key)
+                        logger.info(f"[PM] Successfully replied to user {from_id} for message {msg_id}")
+                    else:
+                        logger.error(f"[PM] Failed to send reply message to user {from_id}: {res}. Releasing lock.")
+                        await self.responder.release_lock(mention_key)
+
+                except Exception as e:
+                    logger.error(f"[PM] Error generating/sending response for message {msg_id}: {e}. Releasing lock.", exc_info=True)
+                    await self.responder.release_lock(mention_key)
+
+        except Exception as e:
+            logger.error(f"Error in private messages processing: {e}", exc_info=True)
 
     async def _get_user_first_name(self, user_id: int) -> str:
         if user_id in self._user_names_cache:
