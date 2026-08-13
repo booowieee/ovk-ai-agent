@@ -127,16 +127,26 @@ async def _show_ovk_settings(message: types.Message):
         else:
             await message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
 
+import html
+
+def format_prompt_preview(prompt: str, max_len: int = 300) -> str:
+    if not prompt:
+        return "Не установлен"
+    if len(prompt) > max_len:
+        return html.escape(prompt[:max_len]) + "..."
+    return html.escape(prompt)
+
 @router.callback_query(F.data == "menu_prompt")
 async def cb_menu_prompt(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return
 
     bot_settings = await SettingsRepository.get_settings()
-    current_prompt = bot_settings.system_prompt if bot_settings and bot_settings.system_prompt else "Не установлен"
+    raw_prompt = bot_settings.system_prompt if bot_settings else ""
+    preview = format_prompt_preview(raw_prompt)
 
     text = (
-        f"<b>Текущий системный промпт:</b>\n<code>{current_prompt}</code>\n\n"
+        f"<b>Текущий системный промпт:</b>\n<code>{preview}</code>\n\n"
         "Отправьте новый текст промпта в ответном сообщении."
     )
     
@@ -150,10 +160,11 @@ async def msg_prompt(message: types.Message, state: FSMContext):
         return
 
     bot_settings = await SettingsRepository.get_settings()
-    current_prompt = bot_settings.system_prompt if bot_settings and bot_settings.system_prompt else "Не установлен"
+    raw_prompt = bot_settings.system_prompt if bot_settings else ""
+    preview = format_prompt_preview(raw_prompt)
 
     text = (
-        f"<b>Текущий системный промпт:</b>\n<code>{current_prompt}</code>\n\n"
+        f"<b>Текущий системный промпт:</b>\n<code>{preview}</code>\n\n"
         "Отправьте новый текст промпта в ответном сообщении."
     )
     
