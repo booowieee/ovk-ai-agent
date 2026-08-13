@@ -140,11 +140,11 @@ class GeminiService:
                     continue
 
             # 2. Пытаемся использовать премиум-генераторы, если прописаны API-ключи в .env
-            # Вариант A: Hugging Face Inference API (FLUX.1-schnell) — качественный и полностью бесплатный
+            # Вариант A: Hugging Face Inference API (SDXL) — качественный и полностью бесплатный
             if settings.HUGGINGFACE_API_KEY:
                 try:
-                    logger.info(f"[Gemini:Image:Premium] Attempting generation via Hugging Face Inference API (FLUX.1-schnell) for: '{prompt}'")
-                    hf_url = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
+                    logger.info(f"[Gemini:Image:Premium] Attempting generation via Hugging Face Inference API (SDXL) for: '{prompt}'")
+                    hf_url = "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-xl-base-1.0"
                     headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
                     payload = {"inputs": prompt}
                     response = await self.state.http_client.post(hf_url, headers=headers, json=payload, timeout=60.0)
