@@ -11,7 +11,14 @@ from src.openvk.mention_parser import clean_mention_from_text, is_mention_of_use
 
 class OpenVKPoller:
     """
-    Универсальный поллер OpenVK с подробным логированием (диагностическое логирование).
+    Универсальный поллер OpenVK.
+
+    Использует две параллельные стратегии:
+    1. Проверка notifications.get (реалтайм, основной триггер упоминаний и реплаев)
+    2. Опрос стен (wall polling, резервный фолбек на случай лагов/ограничений API)
+
+    Дедупликация полностью вынесена на уровень глобальных ID комментариев/постов
+    в Redis, что исключает дублирование ответов.
     """
 
     def __init__(self, state: AppState, client: OpenVKClient, responder: OpenVKResponder, gemini_service):
@@ -158,21 +165,17 @@ class OpenVKPoller:
         except Exception as e:
             logger.error(f"Error in notifications processing: {e}", exc_info=True)
 
-    async def _get_latest_comments(self, owner_id: int, post_id: int, limit=20) -> list:
+    async def _get_latest_comments(self, owner_id: int, post_id: int, limit=100) -> list:
+        """
+        Получает комментарии к посту.
+        Использует фиксированный count=100 без смещений для обхода багов
+        пагинации/удалений в OpenVK API.
+        """
         try:
             raw = await self.client.get_comments_raw(owner_id, post_id, count=limit, offset=0)
             response = raw.get('response', {})
-            total_count = response.get('count', 0)
             items = response.get('items', [])
-
-            logger.info(f"[Wall:Comments] Post {owner_id}_{post_id}: total_count={total_count}, items_on_first_page={len(items)}")
-
-            if total_count > limit:
-                offset = total_count - limit
-                raw_offset = await self.client.get_comments_raw(owner_id, post_id, count=limit, offset=offset)
-                items = raw_offset.get('response', {}).get('items', [])
-                logger.info(f"[Wall:Comments] Post {owner_id}_{post_id}: offset query returned {len(items)} items (offset={offset})")
-
+            logger.info(f"[Wall:Comments] Post {owner_id}_{post_id}: retrieved {len(items)} active comments.")
             return items
         except Exception as e:
             logger.error(f"Error fetching latest comments for {owner_id}_{post_id}: {e}", exc_info=True)
@@ -196,7 +199,7 @@ class OpenVKPoller:
                     if comment_count == 0:
                         continue
 
-                    comments = await self._get_latest_comments(owner_id, post_id, limit=20)
+                    comments = await self._get_latest_comments(owner_id, post_id, limit=100)
 
                     for comment in comments:
                         cid = comment.get('id')
