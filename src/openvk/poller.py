@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import time
 from typing import Optional
 from src.core.app_state import AppState
 from src.openvk.client import OpenVKClient
@@ -17,6 +18,10 @@ class OpenVKPoller:
     1. Проверка notifications.get (реалтайм, основной триггер упоминаний и реплаев)
     2. Опрос стен (wall polling, резервный фолбек на случай лагов/ограничений API)
 
+    Дополнительно поддерживает:
+    - Вечный онлайн (обновляется раз в 4 минуты)
+    - Автодобавление всех входящих заявок в друзья (проверяется раз в минуту)
+
     Дедупликация полностью вынесена на уровень глобальных ID комментариев/постов
     в Redis, что исключает дублирование ответов.
     """
@@ -29,6 +34,8 @@ class OpenVKPoller:
         self._monitored_walls: list[int] = []
         self._user_names_cache: dict[int, str] = {}
         self._bot_username: Optional[str] = None
+        self._last_online_time: float = 0.0
+        self._last_friend_check_time: float = 0.0
 
     async def run(self):
         logger.info("Starting OpenVK poller...")
@@ -53,6 +60,12 @@ class OpenVKPoller:
 
                 # 2. Опрашиваем стены
                 await self._poll_walls(db_settings)
+
+                # 3. Вечный статус онлайн
+                await self._maintain_online()
+
+                # 4. Автодобавление в друзья
+                await self._auto_accept_friends()
 
             except Exception as e:
                 logger.error(f"Error in poller loop: {e}", exc_info=True)
@@ -90,6 +103,47 @@ class OpenVKPoller:
             oldest = external.pop(0)
             self._monitored_walls.remove(oldest)
         logger.info(f"[Poller] Added wall {wall_id} to monitoring. Active walls: {self._monitored_walls}")
+
+    async def _maintain_online(self):
+        """Поддерживает «вечный» статус онлайн, отправляя пинг раз в 4 минуты."""
+        now = time.time()
+        if now - self._last_online_time >= 240.0:
+            try:
+                logger.info("[Poller:Online] Setting online status...")
+                await self.client.call_method("account.setOnline")
+                self._last_online_time = now
+            except Exception as e:
+                logger.error(f"Error setting online status: {e}")
+
+    async def _auto_accept_friends(self):
+        """Проверяет и автоматически одобряет все входящие заявки в друзья раз в минуту."""
+        now = time.time()
+        if now - self._last_friend_check_time >= 60.0:
+            self._last_friend_check_time = now
+            try:
+                raw = await self.client.call_method("friends.getRequests", {"need_viewed": 0, "count": 50})
+                response = raw.get('response', {})
+                
+                # Заявки могут возвращаться как словарь с items, так и плоским списком
+                if isinstance(response, dict):
+                    items = response.get('items', [])
+                elif isinstance(response, list):
+                    items = response
+                else:
+                    items = []
+
+                if not items:
+                    return
+
+                logger.info(f"[Poller:Friends] Found {len(items)} incoming friend requests. Accepting...")
+                for user_id in items:
+                    try:
+                        res = await self.client.call_method("friends.add", {"user_id": user_id})
+                        logger.info(f"[Poller:Friends] Accepted friend request from user {user_id}. Result: {res.get('response')}")
+                    except Exception as e:
+                        logger.error(f"Failed to accept friend request from user {user_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error checking friend requests: {e}")
 
     async def _process_notifications(self, db_settings):
         """Обрабатывает входящие уведомления в реальном времени."""
