@@ -36,19 +36,17 @@ class OpenVKPoller:
             try:
                 is_paused = await self.responder.redis.get('ovk:bot:paused')
                 if is_paused:
-                    logger.info("[Poller] Bot is paused via emergency stop key.")
                     await asyncio.sleep(self.state.poll_interval)
                     continue
 
                 db_settings = await SettingsRepository.get_settings()
                 if not db_settings or not db_settings.is_enabled:
-                    logger.info("[Poller] Bot is disabled in system settings.")
                     await asyncio.sleep(self.state.poll_interval)
                     continue
 
                 await self._apply_settings(db_settings)
 
-                logger.info(f"[Poller] Tick. username={self._bot_username}, walls={self._monitored_walls}")
+                logger.info(f"[Poller] Tick. Active walls: {self._monitored_walls}")
 
                 # 1. Сначала обрабатываем уведомления
                 await self._process_notifications(db_settings)
@@ -100,8 +98,6 @@ class OpenVKPoller:
             notifications = raw.get('response', {}).get('items', [])
             profiles = raw.get('response', {}).get('profiles', [])
 
-            logger.info(f"[Notifications] Retrieved {len(notifications)} items from notifications.get")
-
             for p in (profiles or []):
                 pid = p.get('id')
                 pfname = p.get('first_name')
@@ -110,19 +106,15 @@ class OpenVKPoller:
 
             for notif in notifications:
                 ntype = notif.get('type')
+                if ntype not in ('mention', 'reply_comment', 'mention_comments'):
+                    continue
+
                 feedback = notif.get('feedback', {})
                 parent = notif.get('parent', {})
                 from_user_id = feedback.get('from_id')
                 text = feedback.get('text', '')
 
-                logger.info(f"[Notifications] Processing item: type={ntype}, from={from_user_id}, text='{text}'")
-
-                if ntype not in ('mention', 'reply_comment', 'mention_comments'):
-                    logger.info(f"[Notifications] Skip: type '{ntype}' is not processed.")
-                    continue
-
                 if from_user_id == self.client.user_id:
-                    logger.info("[Notifications] Skip: notification from bot itself.")
                     continue
 
                 if from_user_id:
@@ -147,10 +139,7 @@ class OpenVKPoller:
                 is_reply = (ntype == 'reply_comment')
                 is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
 
-                logger.info(f"[Notifications] mention_key={mention_key}, is_reply={is_reply}, is_mention={is_mention}")
-
                 if not is_reply and not is_mention:
-                    logger.info("[Notifications] Skip: not a reply to bot and no mention found in text.")
                     continue
 
                 first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
@@ -174,12 +163,10 @@ class OpenVKPoller:
         Это полностью обходит баги кэширования wall.get и оффсетов OpenVK API.
         """
         try:
-            # 1. Проверяем реальное количество комментариев в БД напрямую
             raw = await self.client.get_comments_raw(owner_id, post_id, count=1, offset=0)
             response = raw.get('response', {})
             total_count = response.get('count', 0)
 
-            # 2. Вычисляем оффсет на базе реального total_count
             if total_count <= limit:
                 offset = 0
                 fetch_count = limit
@@ -187,14 +174,8 @@ class OpenVKPoller:
                 offset = total_count - limit
                 fetch_count = limit
 
-            # 3. Запрашиваем саму порцию комментариев
             raw_data = await self.client.get_comments_raw(owner_id, post_id, count=fetch_count, offset=offset)
             items = raw_data.get('response', {}).get('items', [])
-            
-            logger.info(
-                f"[Wall:Comments] Post {owner_id}_{post_id}: "
-                f"real_total_count={total_count}, query_offset={offset}, items_returned={len(items)}"
-            )
             return items
         except Exception as e:
             logger.error(f"Error fetching latest comments for {owner_id}_{post_id}: {e}", exc_info=True)
@@ -205,15 +186,12 @@ class OpenVKPoller:
         for wall_owner_id in list(self._monitored_walls):
             try:
                 posts = await self.client.get_wall_posts(wall_owner_id, filter='all', count=5)
-                logger.info(f"[Wall] Polled wall {wall_owner_id}. Found {len(posts)} posts.")
                 for post in posts:
                     owner_id = post.get('owner_id') or wall_owner_id
                     post_id = post.get('id')
                     comment_info = post.get('comments', {})
                     comment_count = comment_info.get('count', 0)
                     post_key = f"{owner_id}_{post_id}"
-
-                    logger.info(f"[Wall] Post {post_key}: comment_count in post payload={comment_count}")
 
                     if comment_count == 0:
                         continue
@@ -225,16 +203,11 @@ class OpenVKPoller:
                         from_user_id = comment.get('from_id')
                         text = comment.get('text', '')
 
-                        logger.info(f"[Wall] Checking comment {cid} on post {post_key} from {from_user_id}: '{text}'")
-
                         if from_user_id == self.client.user_id:
-                            logger.info(f"[Wall] Comment {cid} skip: authored by bot.")
                             continue
 
                         is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
                         is_reply = (comment.get('reply_to_user') == self.client.user_id)
-
-                        logger.info(f"[Wall] Comment {cid} checks: is_mention={is_mention}, is_reply={is_reply}")
 
                         if not is_mention and not is_reply:
                             continue
@@ -274,14 +247,12 @@ class OpenVKPoller:
 
         for owner in possible_owners:
             try:
-                logger.info(f"[Poller] Searching comment {comment_id} on wall of {owner}...")
                 posts = await self.client.get_wall_posts(owner_id=owner, count=10)
                 for post in posts:
                     pid = post.get('id')
                     comments = await self.client.get_comments(owner_id=owner, post_id=pid, count=50)
                     for comment in comments:
                         if comment.get('id') == comment_id:
-                            logger.info(f"[Poller] Found comment {comment_id} on wall of {owner} under post {pid}")
                             return owner, pid
             except Exception as e:
                 logger.error(f"Error searching comment {comment_id} on wall {owner}: {e}")
@@ -291,7 +262,6 @@ class OpenVKPoller:
                                comment_id: Optional[int] = None, from_user_id: Optional[int] = None,
                                system_prompt: Optional[str] = None, reply_prefix: Optional[str] = None):
         is_proc = await self.responder.is_already_processed(mention_key)
-        logger.info(f"[Bot] is_already_processed check for {mention_key} returned: {is_proc}")
         if is_proc:
             return
 
@@ -304,11 +274,8 @@ class OpenVKPoller:
                 return
 
         clean_text = clean_mention_from_text(text, self.client.user_id, self._bot_username)
-        logger.info(f"[Bot] Raw text for {mention_key}: '{text}'")
-        logger.info(f"[Bot] Clean text for {mention_key}: '{clean_text}'")
 
         if not clean_text:
-            logger.info(f"[Poller] Mention {mention_key} text is empty after cleaning. Marking completed.")
             await self.responder.mark_completed(mention_key)
             return
 
