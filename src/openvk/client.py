@@ -55,6 +55,10 @@ class OpenVKClient:
         data = await self.call_method("wall.getComments", params)
         return data.get('response', {}).get('items', [])
 
+    async def get_comments_raw(self, owner_id: int, post_id: int, count=100, offset=0) -> dict:
+        params = {'owner_id': owner_id, 'post_id': post_id, 'count': count, 'offset': offset}
+        return await self.call_method("wall.getComments", params)
+
     async def get_comment_by_id(self, owner_id: int, comment_id: int) -> dict | None:
         params = {'owner_id': owner_id, 'comment_id': comment_id}
         data = await self.call_method("wall.getComment", params)

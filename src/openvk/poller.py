@@ -28,6 +28,7 @@ class OpenVKPoller:
         self.gemini_service = gemini_service
         self._monitored_walls: list[int] = []
         self._user_names_cache: dict[int, str] = {}
+        self._bot_username: Optional[str] = None
 
     async def run(self):
         logger.info("Starting OpenVK poller...")
@@ -43,9 +44,9 @@ class OpenVKPoller:
                     await asyncio.sleep(self.state.poll_interval)
                     continue
 
-                self._apply_settings(db_settings)
+                await self._apply_settings(db_settings)
 
-                logger.info(f"[Poller] Tick. walls={self._monitored_walls}")
+                logger.info(f"[Poller] Tick. username={self._bot_username}, walls={self._monitored_walls}")
 
                 # 1. Сначала обрабатываем уведомления (мгновенная реакция)
                 await self._process_notifications(db_settings)
@@ -58,7 +59,7 @@ class OpenVKPoller:
 
             await asyncio.sleep(self.state.poll_interval)
 
-    def _apply_settings(self, db_settings):
+    async def _apply_settings(self, db_settings):
         if db_settings.openvk_token:
             self.client.token = db_settings.openvk_token
         if db_settings.openvk_instance_url:
@@ -69,6 +70,15 @@ class OpenVKPoller:
                 self._monitored_walls.insert(0, db_settings.openvk_user_id)
         if db_settings.poll_interval:
             self.state.poll_interval = db_settings.poll_interval
+
+        # Резолвим никнейм бота для поддержки упоминаний через @username
+        if not self._bot_username and self.client.user_id:
+            try:
+                info = await self.client.get_user_info()
+                self._bot_username = info.get('screen_name') or info.get('domain')
+                logger.info(f"[Poller] Bot username resolved: {self._bot_username}")
+            except Exception as e:
+                logger.warning(f"Could not resolve bot username: {e}")
 
     def _add_monitored_wall(self, wall_id: int):
         """Добавляет стену в список мониторинга. Ограничиваем список 5 внешними пользователями."""
@@ -133,7 +143,7 @@ class OpenVKPoller:
 
                 # Если это не прямой реплай на коммент бота, проверяем наличие упоминания в тексте
                 is_reply = (ntype == 'reply_comment')
-                if not is_reply and not is_mention_of_user(text, self.client.user_id):
+                if not is_reply and not is_mention_of_user(text, self.client.user_id, self._bot_username):
                     continue
 
                 first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
@@ -147,6 +157,25 @@ class OpenVKPoller:
 
         except Exception as e:
             logger.error(f"Error in notifications processing: {e}")
+
+    async def _get_latest_comments(self, owner_id: int, post_id: int, limit=20) -> list:
+        """Получает последние комментарии к посту, обходя кэш API wall.get."""
+        try:
+            raw = await self.client.get_comments_raw(owner_id, post_id, count=limit, offset=0)
+            response = raw.get('response', {})
+            total_count = response.get('count', 0)
+            items = response.get('items', [])
+
+            # Если комментариев больше, чем размер порции, делаем повторный запрос со сдвигом
+            if total_count > limit:
+                offset = total_count - limit
+                raw_offset = await self.client.get_comments_raw(owner_id, post_id, count=limit, offset=offset)
+                items = raw_offset.get('response', {}).get('items', [])
+
+            return items
+        except Exception as e:
+            logger.error(f"Error fetching latest comments for {owner_id}_{post_id}: {e}")
+            return []
 
     async def _poll_walls(self, db_settings):
         """Опрашивает стены на предмет новых комментариев с упоминанием бота."""
@@ -162,10 +191,8 @@ class OpenVKPoller:
                     if comment_count == 0:
                         continue
 
-                    # Запрашиваем последние комментарии (без оптимизации по count для обхода кэша API)
-                    fetch_count = min(20, comment_count)
-                    offset = max(0, comment_count - fetch_count)
-                    comments = await self.client.get_comments(owner_id, post_id, count=fetch_count, offset=offset)
+                    # Получаем свежие комментарии напрямую через wall.getComments (без кэша)
+                    comments = await self._get_latest_comments(owner_id, post_id, limit=20)
 
                     for comment in comments:
                         cid = comment.get('id')
@@ -178,7 +205,7 @@ class OpenVKPoller:
                         text = comment.get('text', '')
                         
                         # Проверяем, является ли комментарий упоминанием или прямым ответом боту
-                        is_mention = is_mention_of_user(text, self.client.user_id)
+                        is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
                         is_reply = (comment.get('reply_to_user') == self.client.user_id)
 
                         if not is_mention and not is_reply:
@@ -248,7 +275,7 @@ class OpenVKPoller:
                 await self.responder.release_lock(mention_key)
                 return
 
-        clean_text = clean_mention_from_text(text, self.client.user_id)
+        clean_text = clean_mention_from_text(text, self.client.user_id, self._bot_username)
         logger.info(f"[Bot] Raw text for {mention_key}: '{text}'")
         logger.info(f"[Bot] Clean text for {mention_key}: '{clean_text}'")
 
