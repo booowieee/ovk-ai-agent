@@ -463,6 +463,16 @@ class OpenVKPoller:
             # Выбираем случайный пост из подходящих (комментируем 1 пост раз в 10 минут)
             source_id, post_id, post_text, redis_key = random.choice(valid_posts)
 
+            # Живая проверка: действительно ли там нет нашего комментария
+            try:
+                comments = await self._get_latest_comments(source_id, post_id, limit=50)
+                if any(c.get('from_id') == self.client.user_id for c in comments):
+                    logger.info(f"[Poller:GlobalFeed] Bot already has a comment in global post {source_id}_{post_id}. Skipping.")
+                    await self.responder.redis.set(redis_key, "1", ex=604800)
+                    return
+            except Exception as e:
+                logger.error(f"Error doing live check on global post {source_id}_{post_id}: {e}")
+
             # Ставим блокировку в Redis, чтобы не комментировать повторно
             await self.responder.redis.set(redis_key, "1", ex=604800)  # 7 дней
 
@@ -537,6 +547,17 @@ class OpenVKPoller:
         is_proc = await self.responder.is_already_processed(mention_key)
         if is_proc:
             return
+
+        # Живая проверка: если мы комментируем сам пост (а не отвечаем на конкретный комментарий)
+        if comment_id is None and owner_id is not None and post_id is not None:
+            try:
+                comments = await self._get_latest_comments(owner_id, post_id, limit=50)
+                if any(c.get('from_id') == self.client.user_id for c in comments):
+                    logger.info(f"[Poller:Check] Bot already has a comment in post {owner_id}_{post_id}. Skipping.")
+                    await self.responder.mark_completed(mention_key)
+                    return
+            except Exception as e:
+                logger.error(f"Error doing live comment check for post {owner_id}_{post_id}: {e}")
 
         if (owner_id is None or post_id is None) and comment_id is not None:
             logger.info(f"[Poller] Post/owner ID missing for key {mention_key}. Searching...")
