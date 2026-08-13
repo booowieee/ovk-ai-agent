@@ -376,7 +376,10 @@ class OpenVKPoller:
 
                 # Сразу помечаем диалог как прочитанный, чтобы не обрабатывать повторно
                 try:
-                    await self.client.call_method("messages.markAsRead", {"peer_id": peer_id})
+                    await self.client.call_method("messages.markAsRead", {
+                        "peer_id": peer_id,
+                        "message_ids": str(msg_id)
+                    })
                 except Exception as e:
                     logger.warning(f"[PM] Failed to mark message as read: {e}")
 
