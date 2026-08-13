@@ -61,10 +61,13 @@ class OpenVKClient:
         items = data.get('response', {}).get('items', [])
         return items[0] if items else None
 
-    async def create_comment(self, owner_id: int, post_id: int, message: str, reply_to_comment: int = None) -> int:
+    async def create_comment(self, owner_id: int, post_id: int, message: str,
+                             reply_to_comment: int = None, guid: int = None) -> int:
         params = {'owner_id': owner_id, 'post_id': post_id, 'message': message}
         if reply_to_comment is not None:
             params['reply_to_comment'] = reply_to_comment
+        if guid is not None:
+            params['guid'] = guid
         data = await self.call_method("wall.createComment", params)
         return data.get('response', {}).get('comment_id', 0)
 

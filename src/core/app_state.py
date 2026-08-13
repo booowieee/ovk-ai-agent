@@ -13,7 +13,6 @@ class AppState:
         self.redis: Optional[Redis] = None
         self.gemini_semaphore: asyncio.Semaphore = asyncio.Semaphore(3)
         self.poll_interval: int = 10
-        self.use_notifications_api: bool = True  # False = fallback to wall polling
     
     async def init_connections(self, redis_url: str):
         """Инициализация HTTP клиента и Redis."""

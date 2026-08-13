@@ -31,7 +31,6 @@ async def main():
     app_state = AppState()
     await app_state.init_connections(settings.REDIS_URL)
     app_state.poll_interval = settings.POLL_INTERVAL
-    app_state.use_notifications_api = True
 
     # Initialize services
     gemini_service = GeminiService(app_state)
