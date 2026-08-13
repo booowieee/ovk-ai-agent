@@ -99,28 +99,41 @@ class GeminiService:
 
     async def generate_image(self, prompt: str) -> Optional[bytes]:
         """
-        Генерирует изображение с помощью Google Imagen 3.
+        Генерирует изображение с помощью встроенных моделей Gemini Image (через generate_content).
         
         :param prompt: Описание изображения (желательно на английском).
-        :return: Байты сгенерированного JPEG изображения или None.
+        :return: Байты сгенерированного изображения или None.
         """
+        fallback_image_models = [
+            'gemini-3.1-flash-image',
+            'gemini-2.5-flash-image',
+            'gemini-3-pro-image'
+        ]
+        
         async with self.state.gemini_semaphore:
-            try:
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: self.client.models.generate_images(
-                        model='imagen-4.0-generate-001',
-                        prompt=prompt,
-                        config=genai.types.GenerateImagesConfig(
-                            number_of_images=1,
-                            output_mime_type="image/jpeg",
-                            aspect_ratio="1:1"
+            for model_name in fallback_image_models:
+                try:
+                    logger.info(f"[Gemini:Image] Attempting image generation with model {model_name}...")
+                    loop = asyncio.get_event_loop()
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda: self.client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config=genai.types.GenerateContentConfig(
+                                response_modalities=["IMAGE"]
+                            )
                         )
                     )
-                )
-                if result and result.generated_images:
-                    return result.generated_images[0].image.image_bytes
-            except Exception as e:
-                logger.error(f"Error in Gemini Image Generation (Imagen 3): {e}", exc_info=True)
+                    if result and result.candidates:
+                        content = result.candidates[0].content
+                        if content and content.parts:
+                            for part in content.parts:
+                                if part.inline_data and part.inline_data.data:
+                                    logger.info(f"[Gemini:Image] Successfully generated image using {model_name}")
+                                    return part.inline_data.data
+                except Exception as e:
+                    logger.warning(f"[Gemini:Image] Failed to generate image with model {model_name}: {e}")
+                    continue
+            logger.error("[Gemini:Image] All image generation models failed.")
             return None
