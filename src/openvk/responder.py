@@ -47,3 +47,15 @@ class OpenVKResponder:
         except Exception as e:
             logger.error(f"Error replying to post {post_id}: {e}")
             return None
+
+    async def add_like(self, type: str, owner_id: int, item_id: int):
+        """Ставит лайк на пост или комментарий."""
+        try:
+            logger.info(f"[Responder] Adding like to {type} {owner_id}_{item_id}...")
+            await self.client.call_method("likes.add", {
+                "type": type,
+                "owner_id": owner_id,
+                "item_id": item_id
+            })
+        except Exception as e:
+            logger.error(f"Failed to add like to {type} {owner_id}_{item_id}: {e}")

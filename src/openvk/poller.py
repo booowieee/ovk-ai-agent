@@ -486,6 +486,7 @@ class OpenVKPoller:
 
             if result is not None:
                 logger.info(f"[Poller:GlobalFeed] Successfully commented on post {source_id}_{post_id}")
+                await self.responder.add_like("post", source_id, post_id)
             else:
                 logger.error(f"[Poller:GlobalFeed] Failed to send comment to post {source_id}_{post_id}")
                 await self.responder.redis.delete(redis_key)
@@ -569,6 +570,10 @@ class OpenVKPoller:
             if result is not None:
                 await self.responder.mark_completed(mention_key)
                 logger.info(f"[Bot] Successfully replied to {mention_key}")
+                if comment_id is not None:
+                    await self.responder.add_like("comment", owner_id, comment_id)
+                else:
+                    await self.responder.add_like("post", owner_id, post_id)
             else:
                 logger.error(f"[Bot] Failed to send reply to OpenVK for {mention_key}. Releasing lock.")
                 await self.responder.release_lock(mention_key)
