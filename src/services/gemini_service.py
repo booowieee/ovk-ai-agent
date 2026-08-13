@@ -143,8 +143,8 @@ class GeminiService:
             try:
                 import urllib.parse
                 encoded_prompt = urllib.parse.quote(prompt)
-                url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&private=true"
-                logger.info(f"[Gemini:Image:Fallback] Falling back to free image generation via Pollinations.ai for: '{prompt}'")
+                url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&private=true&model=flux"
+                logger.info(f"[Gemini:Image:Fallback] Falling back to free image generation via Pollinations.ai (FLUX) for: '{prompt}'")
                 
                 # Используем асинхронный HTTP клиент из AppState
                 response = await self.state.http_client.get(url, timeout=30.0)
