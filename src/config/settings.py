@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     OVK_ACCESS_TOKEN: str = ""
     OVK_USER_ID: int = 0
     
+    # Premium Image Generation (Optional fallback API keys)
+    HUGGINGFACE_API_KEY: str = ""
+    POLLINATIONS_API_KEY: str = ""
+    
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://ovk_agent:ovk_agent_pass@db:5432/ovk_agent"
     

@@ -139,24 +139,59 @@ class GeminiService:
                     logger.warning(f"[Gemini:Image] Failed to generate image with model {model_name}: {e}")
                     continue
 
-            # 2. Если все модели Gemini дали сбой (например, лимиты Free Tier = 0), используем бесплатный Pollinations.ai
+            # 2. Пытаемся использовать премиум-генераторы, если прописаны API-ключи в .env
+            # Вариант A: Hugging Face Inference API (FLUX.1-schnell) — качественный и полностью бесплатный
+            if settings.HUGGINGFACE_API_KEY:
+                try:
+                    logger.info(f"[Gemini:Image:Premium] Attempting generation via Hugging Face Inference API (FLUX.1-schnell) for: '{prompt}'")
+                    hf_url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+                    headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
+                    payload = {"inputs": prompt}
+                    response = await self.state.http_client.post(hf_url, headers=headers, json=payload, timeout=60.0)
+                    if response.status_code == 200 and response.content:
+                        logger.info("[Gemini:Image:Premium] Successfully generated image via Hugging Face FLUX")
+                        return response.content
+                    else:
+                        logger.warning(f"[Gemini:Image:Premium] Hugging Face returned status code {response.status_code}: {response.text}")
+                except Exception as e:
+                    logger.error(f"[Gemini:Image:Premium] Failed to generate image via Hugging Face: {e}")
+
+            # Вариант B: gen.pollinations.ai (с авторизацией и выбором модели FLUX)
+            if settings.POLLINATIONS_API_KEY:
+                try:
+                    logger.info(f"[Gemini:Image:Premium] Attempting generation via gen.pollinations.ai (FLUX) for: '{prompt}'")
+                    import urllib.parse
+                    import random
+                    seed = random.randint(1, 9999999)
+                    encoded_prompt = urllib.parse.quote(prompt)
+                    url = f"https://gen.pollinations.ai/image/{encoded_prompt}?width=1024&height=1024&nologo=true&private=true&model=flux&seed={seed}&key={settings.POLLINATIONS_API_KEY}"
+                    response = await self.state.http_client.get(url, timeout=40.0)
+                    if response.status_code == 200 and response.content:
+                        logger.info("[Gemini:Image:Premium] Successfully generated image via gen.pollinations.ai (FLUX)")
+                        return response.content
+                    else:
+                        logger.warning(f"[Gemini:Image:Premium] gen.pollinations.ai returned status code {response.status_code}")
+                except Exception as e:
+                    logger.error(f"[Gemini:Image:Premium] Failed to generate image via gen.pollinations.ai: {e}")
+
+            # Вариант C: Полностью бесплатный анонимный Pollinations (модель Sana, среднее качество)
             try:
                 import urllib.parse
                 import random
                 seed = random.randint(1, 9999999)
                 encoded_prompt = urllib.parse.quote(prompt)
-                url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&private=true&model=flux&seed={seed}"
-                logger.info(f"[Gemini:Image:Fallback] Falling back to free image generation via Pollinations.ai (FLUX) with seed {seed} for: '{prompt}'")
+                url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&private=true&seed={seed}"
+                logger.info(f"[Gemini:Image:Fallback] Falling back to keyless legacy Pollinations.ai (Default model) for: '{prompt}'")
+                logger.warning("[Gemini:Image:Fallback] NOTE: Keyless generation uses a lower quality default model. Provide HUGGINGFACE_API_KEY or POLLINATIONS_API_KEY in .env for high-quality FLUX generation.")
                 
-                # Используем асинхронный HTTP клиент из AppState
                 response = await self.state.http_client.get(url, timeout=30.0)
                 if response.status_code == 200 and response.content:
-                    logger.info("[Gemini:Image:Fallback] Successfully generated image via Pollinations.ai")
+                    logger.info("[Gemini:Image:Fallback] Successfully generated image via keyless Pollinations.ai")
                     return response.content
                 else:
-                    logger.error(f"[Gemini:Image:Fallback] Pollinations.ai returned status code {response.status_code}")
+                    logger.error(f"[Gemini:Image:Fallback] Keyless Pollinations.ai returned status code {response.status_code}")
             except Exception as e:
-                logger.error(f"[Gemini:Image:Fallback] Failed to generate image via Pollinations.ai: {e}")
+                logger.error(f"[Gemini:Image:Fallback] Failed to generate image via keyless Pollinations.ai: {e}")
 
-            logger.error("[Gemini:Image] All image generation models and fallback failed.")
+            logger.error("[Gemini:Image] All image generation models and fallbacks failed.")
             return None

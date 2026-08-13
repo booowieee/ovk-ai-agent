@@ -343,7 +343,6 @@ class OpenVKPoller:
             except Exception as e:
                 logger.warning(f"[PM] messages.getConversations failed, trying messages.getDialogs fallback: {e}")
                 raw = await self.client.call_method("messages.getDialogs", {
-                    "unread": 1,
                     "count": 20
                 })
                 conversations = raw.get('response', {}).get('items', [])
@@ -354,6 +353,13 @@ class OpenVKPoller:
                 msg = item.get('last_message') or item.get('message')
                 if not msg:
                     continue
+
+                # Если это getDialogs fallback, проверяем read_state
+                # read_state: 0 – непрочитанное, 1 – прочитанное.
+                # out: 0 – входящее, 1 – исходящее.
+                if 'read_state' in msg:
+                    if msg.get('read_state') == 1 or msg.get('out') == 1:
+                        continue
 
                 peer_id = msg.get('peer_id') or msg.get('user_id') or msg.get('from_id')
                 from_id = msg.get('from_id') or msg.get('user_id')
