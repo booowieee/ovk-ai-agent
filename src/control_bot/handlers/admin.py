@@ -13,8 +13,15 @@ router = Router()
 class PromptStates(StatesGroup):
     waiting_for_prompt = State()
 
+from src.utils.logger import logger
+
 def is_admin(user_id: int) -> bool:
-    return user_id == settings.ADMIN_TELEGRAM_ID
+    is_adm = user_id == settings.ADMIN_TELEGRAM_ID
+    if not is_adm:
+        logger.info(f"[Telegram Bot] Message from non-admin user (ID: {user_id}). Ignored. Configured admin ID is: {settings.ADMIN_TELEGRAM_ID}")
+    else:
+        logger.info(f"[Telegram Bot] Message verified from admin user (ID: {user_id}).")
+    return is_adm
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
