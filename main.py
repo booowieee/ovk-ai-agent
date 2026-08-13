@@ -48,6 +48,13 @@ async def main():
         gemini_service=gemini_service
     )
 
+    # Диагностика доступных моделей
+    try:
+        models = [m.name for m in gemini_service.client.models.list()]
+        logger.info(f"[Gemini] Available models for this API key: {models}")
+    except Exception as e:
+        logger.error(f"[Gemini] Failed to list available models: {e}")
+
     # Initialize Telegram Control Bot
     bot = Bot(token=settings.BOT_TOKEN)
     dp = Dispatcher()
