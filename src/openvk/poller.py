@@ -15,10 +15,11 @@ class OpenVKPoller:
     """
     Универсальный поллер OpenVK.
 
-    Использует три параллельные стратегии:
+    Использует четыре параллельные стратегии:
     1. Проверка notifications.get (реалтайм, основной триггер упоминаний и реплаев)
     2. Опрос стен (wall polling, резервный фолбек на случай лагов/ограничений API)
     3. Обработка личных сообщений (messages, ответы на входящие ЛС)
+    4. Комментирование случайных постов из глобальной ленты (newsfeed.getGlobal)
 
     Дополнительно поддерживает:
     - Вечный онлайн (обновляется раз в 4 минуты)
@@ -38,6 +39,7 @@ class OpenVKPoller:
         self._bot_username: Optional[str] = None
         self._last_online_time: float = 0.0
         self._last_friend_check_time: float = 0.0
+        self._last_global_feed_time: float = 0.0
 
     async def run(self):
         logger.info("Starting OpenVK poller...")
@@ -66,10 +68,13 @@ class OpenVKPoller:
                 # 3. Обрабатываем личные сообщения (ЛС)
                 await self._process_private_messages(db_settings)
 
-                # 4. Вечный статус онлайн
+                # 4. Комментируем посты из глобальной новостной ленты
+                await self._process_global_feed(db_settings)
+
+                # 5. Вечный статус онлайн
                 await self._maintain_online()
 
-                # 5. Автодобавление в друзья
+                # 6. Автодобавление в друзья
                 await self._auto_accept_friends()
 
             except Exception as e:
@@ -404,6 +409,89 @@ class OpenVKPoller:
 
         except Exception as e:
             logger.error(f"Error in private messages processing: {e}", exc_info=True)
+
+    async def _process_global_feed(self, db_settings):
+        """Периодически комментирует случайные посты из глобальной ленты."""
+        now = time.time()
+        # Проверяем глобальную ленту раз в 10 минут (600 секунд)
+        if now - self._last_global_feed_time < 600.0:
+            return
+
+        self._last_global_feed_time = now
+
+        try:
+            logger.info("[Poller:GlobalFeed] Fetching global newsfeed...")
+            raw = await self.client.call_method("newsfeed.getGlobal", {"count": 15})
+            response = raw.get('response', {})
+            items = response.get('items', [])
+
+            valid_posts = []
+            for item in items:
+                if item.get('type') != 'post':
+                    continue
+
+                post_id = item.get('post_id') or item.get('id')
+                source_id = item.get('source_id') or item.get('owner_id')
+                text = item.get('text', '').strip()
+
+                if not post_id or not source_id:
+                    continue
+
+                # Игнорируем собственные посты
+                if source_id == self.client.user_id:
+                    continue
+
+                # Игнорируем посты без текста (только фото/видео) или слишком короткие
+                if not text or len(text) < 10:
+                    continue
+
+                # Проверяем, не комментировали ли мы этот пост ранее
+                redis_key = f"ovk:global_feed:{source_id}_{post_id}"
+                already_commented = await self.responder.redis.get(redis_key)
+                if already_commented:
+                    continue
+
+                valid_posts.append((source_id, post_id, text, redis_key))
+
+            if not valid_posts:
+                logger.info("[Poller:GlobalFeed] No suitable posts found in this tick.")
+                return
+
+            # Выбираем случайный пост из подходящих (комментируем 1 пост раз в 10 минут)
+            source_id, post_id, post_text, redis_key = random.choice(valid_posts)
+
+            # Ставим блокировку в Redis, чтобы не комментировать повторно
+            await self.responder.redis.set(redis_key, "1", ex=604800)  # 7 дней
+
+            logger.info(f"[Poller:GlobalFeed] Selected post {source_id}_{post_id} for commenting. Text preview: '{post_text[:50]}...'")
+
+            # Генерируем ответ. Инструктируем Gemini прокомментировать чужой пост в тему
+            custom_system_prompt = (
+                "Ты пользователь социальной сети. Напиши короткий, уместный комментарий "
+                "к посту другого человека, выразив свое мнение в тему. "
+                "Пиши просто, кратко, без смайликов и официоза."
+            )
+            if db_settings.system_prompt:
+                custom_system_prompt = f"{db_settings.system_prompt}\n\n{custom_system_prompt}"
+
+            response = await self.gemini_service.generate(post_text, system_prompt=custom_system_prompt)
+            if not response:
+                logger.warning(f"[Poller:GlobalFeed] Gemini returned empty response for post {source_id}_{post_id}")
+                await self.responder.redis.delete(redis_key)
+                return
+
+            # Отправляем комментарий к посту
+            guid = int(hashlib.md5(redis_key.encode()).hexdigest()[:8], 16)
+            result = await self.responder.reply_to_post(source_id, post_id, response, guid=guid)
+
+            if result is not None:
+                logger.info(f"[Poller:GlobalFeed] Successfully commented on post {source_id}_{post_id}")
+            else:
+                logger.error(f"[Poller:GlobalFeed] Failed to send comment to post {source_id}_{post_id}")
+                await self.responder.redis.delete(redis_key)
+
+        except Exception as e:
+            logger.error(f"Error in global feed processing: {e}", exc_info=True)
 
     async def _get_user_first_name(self, user_id: int) -> str:
         if user_id in self._user_names_cache:
