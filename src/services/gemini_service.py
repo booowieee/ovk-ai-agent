@@ -142,9 +142,11 @@ class GeminiService:
             # 2. Если все модели Gemini дали сбой (например, лимиты Free Tier = 0), используем бесплатный Pollinations.ai
             try:
                 import urllib.parse
+                import random
+                seed = random.randint(1, 9999999)
                 encoded_prompt = urllib.parse.quote(prompt)
-                url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&private=true&model=flux"
-                logger.info(f"[Gemini:Image:Fallback] Falling back to free image generation via Pollinations.ai (FLUX) for: '{prompt}'")
+                url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&private=true&model=flux&seed={seed}"
+                logger.info(f"[Gemini:Image:Fallback] Falling back to free image generation via Pollinations.ai (FLUX) with seed {seed} for: '{prompt}'")
                 
                 # Используем асинхронный HTTP клиент из AppState
                 response = await self.state.http_client.get(url, timeout=30.0)
