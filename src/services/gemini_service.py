@@ -173,7 +173,6 @@ class GeminiService:
                     "evalstate/flux1_schnell"
                 ]
                 
-                headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
                 payload = {
                     "data": [
                         prompt,
@@ -188,54 +187,65 @@ class GeminiService:
                 generated_image_bytes = None
                 
                 for space_id in spaces:
-                    try:
-                        base_url = f"https://{space_id.replace('/', '-').replace('.', '-').lower()}.hf.space"
-                        logger.info(f"[Gemini:Image:Premium] Attempting generation via '{space_id}' Gradio Space for: '{prompt}'")
-                        trigger_url = f"{base_url}/gradio_api/call/infer"
-                        
-                        response = await self.state.http_client.post(trigger_url, headers=headers, json=payload, timeout=30.0)
-                        if response.status_code != 200:
-                            logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' trigger failed with status {response.status_code}")
-                            continue
+                    # Пробуем сначала с токеном, затем без него (анонимно), если токен заблокирован или лимитирован
+                    for use_token in [True, False]:
+                        try:
+                            # Заменяем /, . и _ на дефисы для правильного поддомена
+                            subdomain = space_id.replace('/', '-').replace('.', '-').replace('_', '-').lower()
+                            base_url = f"https://{subdomain}.hf.space"
+                            logger.info(f"[Gemini:Image:Premium] Attempting generation via '{space_id}' (use_token={use_token}) for: '{prompt}'")
+                            trigger_url = f"{base_url}/gradio_api/call/infer"
                             
-                        event_id = response.json().get("event_id")
-                        result_url = f"{base_url}/gradio_api/call/infer/{event_id}"
-                        
-                        image_url = None
-                        async with self.state.http_client.stream("GET", result_url, headers=headers, timeout=60.0) as stream_response:
-                            if stream_response.status_code != 200:
-                                logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' stream failed with status {stream_response.status_code}")
+                            headers = {}
+                            if use_token:
+                                headers["Authorization"] = f"Bearer {settings.HUGGINGFACE_API_KEY}"
+                                
+                            response = await self.state.http_client.post(trigger_url, headers=headers, json=payload, timeout=30.0)
+                            if response.status_code != 200:
+                                logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' (use_token={use_token}) trigger failed with status {response.status_code}")
                                 continue
                                 
-                            async for line in stream_response.aiter_lines():
-                                if line.startswith("data:"):
-                                    data_str = line[5:].strip()
-                                    try:
-                                        import json
-                                        data = json.loads(data_str)
-                                        if isinstance(data, list) and len(data) > 0:
-                                            first_item = data[0]
-                                            if isinstance(first_item, dict) and "url" in first_item:
-                                                image_url = first_item.get("url")
-                                                if image_url.startswith("/"):
-                                                    image_url = base_url + image_url
-                                                break
-                                    except Exception:
-                                        pass
-                        
-                        if image_url:
-                            img_res = await self.state.http_client.get(image_url, headers=headers, timeout=30.0)
-                            if img_res.status_code == 200 and img_res.content:
-                                logger.info(f"[Gemini:Image:Premium] Successfully generated image via Gradio Space '{space_id}'")
-                                generated_image_bytes = img_res.content
-                                break
-                            else:
-                                logger.warning(f"[Gemini:Image:Premium] Failed to download image from Space '{space_id}': {img_res.status_code}")
-                        else:
-                            logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' stream finished without image URL")
+                            event_id = response.json().get("event_id")
+                            result_url = f"{base_url}/gradio_api/call/infer/{event_id}"
                             
-                    except Exception as e:
-                        logger.error(f"[Gemini:Image:Premium] Error with Gradio Space '{space_id}': {e}")
+                            image_url = None
+                            async with self.state.http_client.stream("GET", result_url, headers=headers, timeout=60.0) as stream_response:
+                                if stream_response.status_code != 200:
+                                    logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' (use_token={use_token}) stream failed with status {stream_response.status_code}")
+                                    continue
+                                    
+                                async for line in stream_response.aiter_lines():
+                                    if line.startswith("data:"):
+                                        data_str = line[5:].strip()
+                                        try:
+                                            import json
+                                            data = json.loads(data_str)
+                                            if isinstance(data, list) and len(data) > 0:
+                                                first_item = data[0]
+                                                if isinstance(first_item, dict) and "url" in first_item:
+                                                    image_url = first_item.get("url")
+                                                    if image_url.startswith("/"):
+                                                        image_url = base_url + image_url
+                                                    break
+                                        except Exception:
+                                            pass
+                            
+                            if image_url:
+                                img_res = await self.state.http_client.get(image_url, headers=headers, timeout=30.0)
+                                if img_res.status_code == 200 and img_res.content:
+                                    logger.info(f"[Gemini:Image:Premium] Successfully generated image via Space '{space_id}' (use_token={use_token})")
+                                    generated_image_bytes = img_res.content
+                                    break
+                                else:
+                                    logger.warning(f"[Gemini:Image:Premium] Failed to download image from Space '{space_id}': {img_res.status_code}")
+                            else:
+                                logger.warning(f"[Gemini:Image:Premium] Gradio Space '{space_id}' (use_token={use_token}) stream finished without image URL")
+                                
+                        except Exception as e:
+                            logger.error(f"[Gemini:Image:Premium] Error with Gradio Space '{space_id}' (use_token={use_token}): {e}")
+                    
+                    if generated_image_bytes:
+                        break
                         
                 if generated_image_bytes:
                     return generated_image_bytes
