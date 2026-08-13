@@ -266,16 +266,20 @@ class OpenVKPoller:
                     # Проверяем, если это пост на стене бота, оставленный другим пользователем
                     is_post_on_bot_wall = (owner_id == self.client.user_id)
                     post_author = post.get('from_id')
+                    post_text = post.get('text', '')
                     
-                    if is_post_on_bot_wall and post_author and post_author != self.client.user_id:
-                        # Отвечаем на новые посты на стене бота без проверки на упоминания в тексте
+                    # Проверяем, есть ли упоминание бота в тексте поста на чужой стене
+                    is_mention_in_post = False
+                    if not is_post_on_bot_wall and post_author != self.client.user_id:
+                        is_mention_in_post = is_mention_of_user(post_text, self.client.user_id, self._bot_username)
+                    
+                    if (is_post_on_bot_wall and post_author and post_author != self.client.user_id) or is_mention_in_post:
                         mention_key = f"post:{owner_id}_{post_id}"
-                        text = post.get('text', '')
                         first_name = await self._get_user_first_name(post_author) if post_author else "Пользователь"
                         reply_prefix = f"[id{post_author}|{first_name}], " if post_author else ""
                         
                         await self._process_mention(
-                            mention_key, text, owner_id, post_id, None, post_author,
+                            mention_key, post_text, owner_id, post_id, None, post_author,
                             system_prompt=db_settings.system_prompt,
                             reply_prefix=reply_prefix
                         )
