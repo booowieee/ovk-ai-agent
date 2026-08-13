@@ -28,7 +28,6 @@ class OpenVKPoller:
         self.gemini_service = gemini_service
         self._monitored_walls: list[int] = []
         self._user_names_cache: dict[int, str] = {}
-        self._known_counts: dict[str, int] = {}
 
     async def run(self):
         logger.info("Starting OpenVK poller...")
@@ -159,18 +158,11 @@ class OpenVKPoller:
                     post_id = post.get('id')
                     comment_info = post.get('comments', {})
                     comment_count = comment_info.get('count', 0)
-                    post_key = f"{owner_id}_{post_id}"
 
                     if comment_count == 0:
-                        self._known_counts[post_key] = 0
                         continue
 
-                    old_count = self._known_counts.get(post_key)
-                    self._known_counts[post_key] = comment_count
-                    if old_count is not None and comment_count <= old_count:
-                        continue
-
-                    # Запрашиваем последние комментарии
+                    # Запрашиваем последние комментарии (без оптимизации по count для обхода кэша API)
                     fetch_count = min(20, comment_count)
                     offset = max(0, comment_count - fetch_count)
                     comments = await self.client.get_comments(owner_id, post_id, count=fetch_count, offset=offset)
@@ -184,7 +176,12 @@ class OpenVKPoller:
                             continue
 
                         text = comment.get('text', '')
-                        if not is_mention_of_user(text, self.client.user_id):
+                        
+                        # Проверяем, является ли комментарий упоминанием или прямым ответом боту
+                        is_mention = is_mention_of_user(text, self.client.user_id)
+                        is_reply = (comment.get('reply_to_user') == self.client.user_id)
+
+                        if not is_mention and not is_reply:
                             continue
 
                         mention_key = f"comment:{cid}"
@@ -252,6 +249,9 @@ class OpenVKPoller:
                 return
 
         clean_text = clean_mention_from_text(text, self.client.user_id)
+        logger.info(f"[Bot] Raw text for {mention_key}: '{text}'")
+        logger.info(f"[Bot] Clean text for {mention_key}: '{clean_text}'")
+
         if not clean_text:
             logger.info(f"[Poller] Mention {mention_key} text is empty after cleaning. Marking completed.")
             await self.responder.mark_completed(mention_key)
