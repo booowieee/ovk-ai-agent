@@ -144,7 +144,7 @@ class GeminiService:
             if settings.HUGGINGFACE_API_KEY:
                 try:
                     logger.info(f"[Gemini:Image:Premium] Attempting generation via Hugging Face Inference API (FLUX.1-schnell) for: '{prompt}'")
-                    hf_url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+                    hf_url = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
                     headers = {"Authorization": f"Bearer {settings.HUGGINGFACE_API_KEY}"}
                     payload = {"inputs": prompt}
                     response = await self.state.http_client.post(hf_url, headers=headers, json=payload, timeout=60.0)
