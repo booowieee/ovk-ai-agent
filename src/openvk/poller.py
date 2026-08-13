@@ -572,16 +572,6 @@ class OpenVKPoller:
         img_gen = await self.responder.redis.get('ovk:settings:image_generation')
         image_gen_enabled = (img_gen == b'1' or img_gen == '1')
 
-        final_prompt = system_prompt
-        if image_gen_enabled:
-            image_instruction = (
-                "\nЕсли пользователь просит тебя что-то нарисовать, сгенерировать картинку, изображение или арт "
-                "(например: 'нарисуй кота', 'покажи закат'), напиши короткий текстовый ответ в своем стиле, "
-                "но в самом конце ответа обязательно прикрепи технический тег строго в следующем формате: "
-                "[GENERATE_IMAGE: детальное описание промпта для рисования на английском языке]. Промпт пиши обязательно на английском."
-            )
-            final_prompt = (final_prompt or "") + image_instruction
-
         clean_text = clean_mention_from_text(text, self.client.user_id, self._bot_username)
 
         if not clean_text:
@@ -590,7 +580,7 @@ class OpenVKPoller:
 
         logger.info(f"[Bot] Generating response for {mention_key}. User text: '{clean_text[:100]}'. Image gen: {image_gen_enabled}")
         try:
-            response = await self.gemini_service.generate(clean_text, system_prompt=final_prompt)
+            response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt, image_gen_enabled=image_gen_enabled)
             if not response:
                 logger.warning(f"[Bot] Gemini returned empty response for {mention_key}. Releasing lock.")
                 await self.responder.release_lock(mention_key)
