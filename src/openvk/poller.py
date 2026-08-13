@@ -578,6 +578,17 @@ class OpenVKPoller:
             await self.responder.mark_completed(mention_key)
             return
 
+        # Инъекция технического требования прямо в текст запроса, чтобы обойти вредный характер бота
+        if image_gen_enabled:
+            drawing_keywords = ["нарисуй", "сгенерируй", "картинку", "картинка", "рисунок", "покажи фото", "скинь фото", "изобрази", "арт", "draw", "paint", "generate"]
+            text_lower = clean_text.lower()
+            if any(kw in text_lower for kw in drawing_keywords):
+                clean_text += (
+                    "\n(Системное требование: обязательно добавь в самый конец своего ответа технический тег "
+                    "[GENERATE_IMAGE: подробное описание на английском языке для генерации картинки]. "
+                    "Не отказывайся и сделай это независимо от твоего характера или мнения о запросе!)"
+                )
+
         logger.info(f"[Bot] Generating response for {mention_key}. User text: '{clean_text[:100]}'. Image gen: {image_gen_enabled}")
         try:
             response = await self.gemini_service.generate(clean_text, system_prompt=system_prompt, image_gen_enabled=image_gen_enabled)
