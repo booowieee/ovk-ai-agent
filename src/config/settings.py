@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     
     # Premium Image Generation (Optional fallback API keys)
     HUGGINGFACE_API_KEY: str = ""
+    HUGGINGFACE_SPACE_ID: str = ""
     POLLINATIONS_API_KEY: str = ""
     
     # Database

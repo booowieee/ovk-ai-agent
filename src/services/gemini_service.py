@@ -167,11 +167,14 @@ class GeminiService:
             # Вариант A: Hugging Face — качественный и полностью бесплатный
             if settings.HUGGINGFACE_API_KEY:
                 # Пробуем несколько альтернативных Gradio Spaces для отказоустойчивости
-                spaces = [
+                spaces = []
+                if settings.HUGGINGFACE_SPACE_ID:
+                    spaces.append(settings.HUGGINGFACE_SPACE_ID)
+                spaces.extend([
                     "black-forest-labs/FLUX.1-schnell",
                     "mukaist/FLUX.1-schnell",
                     "evalstate/flux1_schnell"
-                ]
+                ])
                 
                 payload = {
                     "data": [
