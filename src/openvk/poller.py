@@ -191,20 +191,26 @@ class OpenVKPoller:
 
             for notif in notifications:
                 ntype = notif.get('type')
-                if ntype not in ('mention', 'reply_comment', 'mention_comments', 'wall'):
-                    continue
-
                 feedback = notif.get('feedback', {})
                 parent = notif.get('parent', {})
                 from_user_id = feedback.get('from_id')
                 text = feedback.get('text', '')
 
+                # Отладочный лог всех входящих уведомлений
+                logger.info(f"[Poller:Debug] Received notif: type={ntype}, from_id={from_user_id}, text='{text[:60]}'")
+
+                if ntype not in ('mention', 'reply_comment', 'mention_comments', 'wall'):
+                    logger.info(f"[Poller:Debug] Skipping because type {ntype} is not in monitored types.")
+                    continue
+
                 if from_user_id == self.client.user_id:
+                    logger.info("[Poller:Debug] Skipping because it's a notification about the bot's own action.")
                     continue
 
                 if from_user_id:
                     from src.repositories.blacklist_repo import BlacklistRepository
                     if await BlacklistRepository.is_blacklisted(from_user_id) or await BlacklistRepository.is_auto_blocked(from_user_id):
+                        logger.info(f"[Poller:Debug] Skipping because user {from_user_id} is blacklisted.")
                         continue
                     self._add_monitored_wall(from_user_id)
 
@@ -236,9 +242,16 @@ class OpenVKPoller:
                 is_wall_post = (ntype == 'wall')
                 is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
 
+                logger.info(
+                    f"[Poller:Debug] Check mention: key={mention_key}, is_reply={is_reply}, "
+                    f"is_wall_post={is_wall_post}, is_mention={is_mention} "
+                    f"(bot_id={self.client.user_id}, bot_username={self._bot_username})"
+                )
+
                 # Отвечаем без проверки на упоминания, если это прямой реплай на коммент бота
                 # или новый пост непосредственно на стене бота
                 if not is_reply and not is_wall_post and not is_mention:
+                    logger.info(f"[Poller:Debug] Notification {mention_key} skipped: no mention / not direct reply.")
                     continue
 
                 first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
