@@ -1,7 +1,6 @@
 import asyncio
 import sys
 import os
-import random
 import httpx
 import re
 
@@ -13,39 +12,6 @@ from src.config import settings
 from src.core.app_state import AppState
 from src.openvk.client import OpenVKClient
 from src.repositories.settings_repo import SettingsRepository
-from src.services.gemini_service import GeminiService
-
-async def fetch_joke_via_api() -> str:
-    try:
-        print("[Test] Fetching joke from rzhunemogu...")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get("http://rzhunemogu.ru/RandJSON.aspx?CType=1", timeout=5.0)
-            text = resp.content.decode('cp1251', errors='ignore')
-            match = re.search(r'\{"content":"(.*)"\}', text, re.DOTALL)
-            if match:
-                joke_text = match.group(1).replace(r'\"', '"').replace(r'\r\n', '\n').replace(r'\n', '\n').strip()
-                if joke_text:
-                    return joke_text
-            return text.strip()
-    except Exception as e:
-        print(f"[Test] Failed to fetch joke from rzhunemogu: {e}")
-        return ""
-
-async def generate_joke_via_gemini(gemini_service) -> str:
-    try:
-        print("[Test] Generating joke via Gemini...")
-        prompt = "Напиши один очень короткий, приличный и смешной анекдот на русском языке. Только сам анекдот, без вступлений и лишних слов."
-        resp = await gemini_service.client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        joke = resp.text.strip() if resp.text else ""
-        if joke.startswith("```"):
-            joke = joke.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
-        return joke
-    except Exception as e:
-        print(f"[Test] Failed to generate joke via Gemini: {e}")
-        return "Улыбнись! Желаю отличного настроения! 😊"
 
 async def test_gifts():
     print("Initializing DB...")
@@ -68,36 +34,49 @@ async def test_gifts():
         user_id=user_id
     )
     
-    gemini_service = GeminiService(app_state)
-    
     print(f"Bot user_id: {client.user_id}")
     print(f"OpenVK Instance: {client.instance_url}")
     
-    # 1. Получаем анекдот
-    print("\n--- Getting Joke ---")
-    joke = await fetch_joke_via_api()
-    if not joke:
-        joke = await generate_joke_via_gemini(gemini_service)
-        
-    print(f"Resulting Joke:\n{joke}\n")
+    print("\n--- Scanning Gift IDs for free ones ---")
+    free_ids = []
     
-    # 2. Выбираем подарок
-    gift_ids = [1, 3, 4, 14, 27, 30, 46, 62, 102]
-    gift_id = random.choice(gift_ids)
-    print(f"Selected random Gift ID: {gift_id}")
-    
-    # 3. Отправляем самому себе (боту)
-    print("\n--- Sending Gift to Self (ID 43657) ---")
-    try:
-        res = await client.call_method("gifts.send", {
-            "user_ids": str(client.user_id),
-            "gift_id": gift_id,
-            "message": joke
-        })
-        print("Send Gift Response:", res)
-    except Exception as e:
-        print("Failed to send gift:", e)
+    # Просканируем первые 20 ID подарков
+    for gift_id in range(1, 21):
+        try:
+            print(f"Testing Gift ID {gift_id}...", end=" ", flush=True)
+            res = await client.call_method("gifts.send", {
+                "user_ids": str(client.user_id),
+                "gift_id": gift_id,
+                "message": "Тест"
+            })
+            response_data = res.get("response", {})
+            
+            # Проверяем успешность
+            success = False
+            if isinstance(response_data, dict):
+                success = (response_data.get("success") == 1 or response_data.get("withdraw_votes") == 0)
+            elif isinstance(response_data, list) and response_data:
+                success = (response_data[0].get("success") == 1)
+                
+            if success:
+                print("-> FREE! (Success)")
+                free_ids.append(gift_id)
+            else:
+                error_msg = response_data.get("error", "Unknown error")
+                print(f"-> Paid/Failed ({error_msg})")
+        except Exception as e:
+            # Если возникла ошибка API
+            err_str = str(e)
+            if "enough voices" in err_str or "voices" in err_str:
+                print("-> Paid (Voices error)")
+            else:
+                print(f"-> Error: {err_str}")
         
+        # Небольшая пауза, чтобы не спамить API
+        await asyncio.sleep(0.5)
+        
+    print(f"\nScan complete! Found free gift IDs: {free_ids}")
+    
     await app_state.http_client.aclose()
     await app_state.redis.close()
 
