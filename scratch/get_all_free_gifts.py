@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import os
+import re
 
 # Добавляем корневую директорию в PYTHONPATH
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -10,6 +11,15 @@ from src.config import settings
 from src.core.app_state import AppState
 from src.openvk.client import OpenVKClient
 from src.repositories.settings_repo import SettingsRepository
+
+def extract_gift_id(image_url: str) -> int:
+    if not image_url:
+        return None
+    # Ищем шаблон "/gift123_" или "gift123_" в имени файла
+    match = re.search(r'gift(\d+)_', image_url)
+    if match:
+        return int(match.group(1))
+    return None
 
 async def get_all_free_gifts():
     print("Initializing DB...")
@@ -54,21 +64,25 @@ async def get_all_free_gifts():
                 gifts = gifts_res.get("response", [])
                 
                 for gift in gifts:
+                    image_url = gift.get("image", "")
+                    gift_id = extract_gift_id(image_url)
+                    
                     # Подарок бесплатный, если is_free == True или price == 0
                     is_free = gift.get("is_free", False) or (gift.get("price") == 0)
                     if is_free:
                         gift_info = {
                             "category_name": cat_name,
                             "category_id": cat_id,
-                            "gift_id": gift.get("id"),
+                            "gift_id": gift_id,
                             "name": gift.get("name"),
                             "price": gift.get("price"),
-                            "usages_left": gift.get("usages_left", "unlimited")
+                            "usages_left": gift.get("usages_left", "unlimited"),
+                            "image": image_url
                         }
                         free_gifts_list.append(gift_info)
                         print(f"  [FREE] ID {gift_info['gift_id']}: '{gift_info['name']}' (usages left: {gift_info['usages_left']})")
                     else:
-                        print(f"  [PAID] ID {gift.get('id')}: '{gift.get('name')}' (price: {gift.get('price')} votes)")
+                        print(f"  [PAID] ID {gift_id}: '{gift.get('name')}' (price: {gift.get('price')} votes)")
                         
             except Exception as e:
                 print(f"  Failed to get gifts in category {cat_id}: {e}")
