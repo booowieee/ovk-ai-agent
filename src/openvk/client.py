@@ -27,6 +27,12 @@ class OpenVKClient:
             
         try:
             response = await self.state.http_client.post(url, data=params)
+            if response.status_code != 200:
+                try:
+                    err_json = response.json()
+                    logger.error(f"OpenVK error body (HTTP {response.status_code}): {err_json}")
+                except Exception:
+                    logger.error(f"OpenVK error text (HTTP {response.status_code}): {response.text[:500]}")
             response.raise_for_status()
             data = response.json()
             if 'error' in data:
