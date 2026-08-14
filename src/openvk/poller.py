@@ -38,6 +38,7 @@ class OpenVKPoller:
         self._monitored_walls: list[int] = []
         self._user_names_cache: dict[int, str] = {}
         self._bot_username: Optional[str] = None
+        self._last_mark_as_viewed_time: float = 0.0
         self._last_online_time: float = 0.0
         self._last_friend_check_time: float = 0.0
         self._last_global_feed_time: float = 0.0
@@ -187,16 +188,22 @@ class OpenVKPoller:
     async def _process_notifications(self, db_settings):
         """Обрабатывает входящие уведомления в реальном времени."""
         try:
-            raw = await self.client.call_method("notifications.get", {"count": 15})
+            # Запрашиваем 100 уведомлений, чтобы точно не пропустить свежие при лагах отметки о прочтении
+            raw = await self.client.call_method("notifications.get", {"count": 100})
             notifications = raw.get('response', {}).get('items', [])
             profiles = raw.get('response', {}).get('profiles', [])
 
-            # Помечаем уведомления как прочитанные, чтобы разблокировать очередь OpenVK
+            # Помечаем уведомления как прочитанные не чаще чем раз в 2 минуты (120 секунд),
+            # чтобы избежать постоянных 429/400 (You have been rate limited) ошибок от OpenVK.
             if notifications:
-                try:
-                    await self.client.call_method("notifications.markAsViewed")
-                except Exception as read_err:
-                    logger.warning(f"[Poller] Failed to mark notifications as viewed: {read_err}")
+                now = time.time()
+                if now - self._last_mark_as_viewed_time >= 120.0:
+                    try:
+                        await self.client.call_method("notifications.markAsViewed")
+                        self._last_mark_as_viewed_time = now
+                        logger.info("[Poller] Successfully marked notifications as viewed")
+                    except Exception as read_err:
+                        logger.warning(f"[Poller] Failed to mark notifications as viewed: {read_err}")
 
             for p in (profiles or []):
                 pid = p.get('id')
@@ -211,7 +218,8 @@ class OpenVKPoller:
                 from_user_id = feedback.get('from_id')
                 text = feedback.get('text', '')
 
-                if ntype not in ('mention', 'reply_comment', 'mention_comments', 'wall'):
+                # Разрешаем типы уведомлений о комментах под постами/фото
+                if ntype not in ('mention', 'reply_comment', 'mention_comments', 'wall', 'comment_post', 'comment_photo'):
                     continue
 
                 if from_user_id == self.client.user_id:
@@ -221,7 +229,6 @@ class OpenVKPoller:
                     from src.repositories.blacklist_repo import BlacklistRepository
                     if await BlacklistRepository.is_blacklisted(from_user_id) or await BlacklistRepository.is_auto_blocked(from_user_id):
                         continue
-                    self._add_monitored_wall(from_user_id)
 
                 # Определяем ключи блокировки и параметры отправки
                 if ntype == 'wall':
@@ -244,7 +251,6 @@ class OpenVKPoller:
                     # Пытаемся безопасно получить ID поста (из feedback или parent)
                     post_id = feedback.get('post_id') or (parent.get('post_id') if parent else None)
                     if not post_id and parent:
-                        # Если parent - это сам пост, его ID лежит в ключе 'id'
                         post_id = parent.get('id')
                         
                     # Извлекаем ID владельца стены
@@ -256,11 +262,17 @@ class OpenVKPoller:
                 is_reply = (ntype == 'reply_comment')
                 is_wall_post = (ntype == 'wall')
                 is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
+                
+                # Дополнительно: отвечаем на любые комментарии под постами бота
+                is_comment_on_bot_post = (ntype in ('comment_post', 'comment_photo') and owner_id == self.client.user_id)
 
-                # Отвечаем без проверки на упоминания, если это прямой реплай на коммент бота
-                # или новый пост непосредственно на стене бота
-                if not is_reply and not is_wall_post and not is_mention:
+                # Отвечаем, если это упоминание, реплай, новый пост на нашей стене, или любой коммент под нашим постом
+                if not is_reply and not is_wall_post and not is_mention and not is_comment_on_bot_post:
                     continue
+
+                # Добавляем стену, где произошла активность, в мониторинг (для резервного wall polling)
+                if owner_id and owner_id != self.client.user_id:
+                    self._add_monitored_wall(owner_id)
 
                 first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
                 reply_prefix = f"[id{from_user_id}|{first_name}], " if from_user_id else ""
@@ -358,8 +370,11 @@ class OpenVKPoller:
 
                         is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
                         is_reply = (comment.get('reply_to_user') == self.client.user_id)
+                        
+                        # Если это комментарий под постом на стене бота, то отвечаем на любой коммент от другого пользователя
+                        is_comment_on_bot_post = (owner_id == self.client.user_id)
 
-                        if not is_mention and not is_reply:
+                        if not is_mention and not is_reply and not is_comment_on_bot_post:
                             continue
 
                         mention_key = f"comment:{cid}"
