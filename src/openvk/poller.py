@@ -827,7 +827,14 @@ class OpenVKPoller:
             msk_now = datetime.utcnow() + timedelta(hours=3)
             text += f"\nПоследнее обновление: {msk_now.strftime('%d.%m.%Y %H:%M:%S')} MSK"
             
-            post_setting = str(settings.OVK_STATS_POST_ID).strip()
+            # Получаем ID поста из Redis, если его там нет - берем из настроек
+            post_id_val = await self.responder.redis.get('ovk:stats_post_id')
+            if post_id_val:
+                post_setting = post_id_val.decode('utf-8') if isinstance(post_id_val, bytes) else str(post_id_val)
+            else:
+                post_setting = str(settings.OVK_STATS_POST_ID).strip()
+                await self.responder.redis.set('ovk:stats_post_id', post_setting)
+
             if "_" in post_setting:
                 parts = post_setting.split("_")
                 owner_id = int(parts[0])
@@ -878,7 +885,8 @@ class OpenVKPoller:
                 try:
                     await self.client.call_method("wall.delete", {
                         "owner_id": owner_id,
-                        "post_id": post_id
+                        "post_id": post_id,
+                        "id": post_id
                     })
                     logger.info(f"[StatsPost] Deleted old stats post {owner_id}_{post_id}")
                 except Exception as del_err:
@@ -894,12 +902,11 @@ class OpenVKPoller:
                 except Exception as pin_err:
                     logger.error(f"[StatsPost] Failed to pin new post {owner_id}_{new_post_id}: {pin_err}")
                 
-                # 4. Обновляем ID в настройках в памяти
-                if "_" in post_setting:
-                    settings.OVK_STATS_POST_ID = f"{owner_id}_{new_post_id}"
-                else:
-                    settings.OVK_STATS_POST_ID = str(new_post_id)
-                logger.info(f"[StatsPost] Updated stats post ID in memory to {settings.OVK_STATS_POST_ID}")
+                # 4. Обновляем ID в настройках в памяти и в Redis!
+                new_setting = f"{owner_id}_{new_post_id}" if "_" in post_setting else str(new_post_id)
+                settings.OVK_STATS_POST_ID = new_setting
+                await self.responder.redis.set('ovk:stats_post_id', new_setting)
+                logger.info(f"[StatsPost] Updated stats post ID in Redis and memory to {new_setting}")
             
         except Exception as e:
             logger.error(f"[StatsPost] Failed to update wall stats post: {e}", exc_info=True)
