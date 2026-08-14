@@ -773,9 +773,6 @@ class OpenVKPoller:
 
     async def _check_and_update_stats_post(self):
         from src.config import settings
-        if not settings.OVK_STATS_POST_ID:
-            return
-
         import time
         now = time.time()
         # Обновляем пост раз в 10 минут (600 секунд)
@@ -832,8 +829,35 @@ class OpenVKPoller:
             if post_id_val:
                 post_setting = post_id_val.decode('utf-8') if isinstance(post_id_val, bytes) else str(post_id_val)
             else:
-                post_setting = str(settings.OVK_STATS_POST_ID).strip()
+                post_setting = str(settings.OVK_STATS_POST_ID or "").strip()
+                if post_setting:
+                    await self.responder.redis.set('ovk:stats_post_id', post_setting)
+
+            # Если ID поста нигде нет, создаем новый пост автоматически (первый запуск)
+            if not post_setting:
+                logger.info("[StatsPost] No stats post ID specified. Creating one dynamically...")
+                owner_id = self.client.user_id
+                post_res = await self.client.call_method("wall.post", {
+                    "owner_id": owner_id,
+                    "message": text
+                })
+                new_post_id = post_res.get("response", {}).get("post_id")
+                if not new_post_id:
+                    raise Exception(f"Failed to create initial stats post: {post_res}")
+                
+                post_setting = f"{owner_id}_{new_post_id}"
                 await self.responder.redis.set('ovk:stats_post_id', post_setting)
+                logger.info(f"[StatsPost] Created initial stats post {post_setting}")
+                
+                try:
+                    await self.client.call_method("wall.pin", {
+                        "owner_id": owner_id,
+                        "post_id": new_post_id
+                    })
+                    logger.info(f"[StatsPost] Pinned initial stats post {post_setting}")
+                except Exception as pin_err:
+                    logger.error(f"[StatsPost] Failed to pin initial post {post_setting}: {pin_err}")
+                return
 
             if "_" in post_setting:
                 parts = post_setting.split("_")
@@ -848,9 +872,11 @@ class OpenVKPoller:
             is_permanent_error = False
             
             try:
+                # Передаем и post_id, и id для обратной совместимости с разными версиями OpenVK
                 res = await self.client.call_method("wall.edit", {
                     "owner_id": owner_id,
                     "post_id": post_id,
+                    "id": post_id,
                     "message": text
                 })
                 logger.info(f"[StatsPost] Edit post response: {res}")
