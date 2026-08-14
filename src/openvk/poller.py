@@ -191,8 +191,8 @@ class OpenVKPoller:
 
             for notif in notifications:
                 ntype = notif.get('type')
-                feedback = notif.get('feedback', {})
-                parent = notif.get('parent', {})
+                feedback = notif.get('feedback') or {}
+                parent = notif.get('parent') or {}
                 from_user_id = feedback.get('from_id')
                 text = feedback.get('text', '')
 
