@@ -42,6 +42,8 @@ class OpenVKPoller:
         self._last_friend_check_time: float = 0.0
         self._last_global_feed_time: float = 0.0
         self._last_stats_post_update: float = 0.0
+        self._existing_friends_to_gift: list[int] = []
+        self._last_friends_fetch_time: float = 0.0
 
     async def run(self):
         logger.info("Starting OpenVK poller...")
@@ -79,7 +81,10 @@ class OpenVKPoller:
                 # 6. Автодобавление в друзья
                 await self._auto_accept_friends()
 
-                # 7. Обновление закрепленного поста со статистикой
+                # 7. Рассылка подарков старым друзьям (по одному за тик) - временно отключено для тестирования
+                # await self._process_old_friends_gifting()
+
+                # 8. Обновление закрепленного поста со статистикой
                 await self._check_and_update_stats_post()
 
             except Exception as e:
@@ -171,6 +176,9 @@ class OpenVKPoller:
                         except Exception as stats_err:
                             logger.error(f"[Stats] Error saving last added friend: {stats_err}")
                             
+                        # Отправляем подарок новому другу! - временно отключено для тестирования
+                        # await self._send_gift_with_joke(uid, is_new_friend=True)
+                            
                     except Exception as e:
                         logger.error(f"Failed to accept friend request from user {uid}: {e}")
             except Exception as e:
@@ -188,7 +196,7 @@ class OpenVKPoller:
                 try:
                     await self.client.call_method("notifications.markAsViewed")
                 except Exception as read_err:
-                    logger.warning(f"[Poller:Debug] Failed to mark notifications as viewed: {read_err}")
+                    logger.warning(f"[Poller] Failed to mark notifications as viewed: {read_err}")
 
             for p in (profiles or []):
                 pid = p.get('id')
@@ -203,21 +211,15 @@ class OpenVKPoller:
                 from_user_id = feedback.get('from_id')
                 text = feedback.get('text', '')
 
-                # Отладочный лог всех входящих уведомлений
-                logger.info(f"[Poller:Debug] Received notif: type={ntype}, from_id={from_user_id}, text='{text[:60]}'")
-
                 if ntype not in ('mention', 'reply_comment', 'mention_comments', 'wall'):
-                    logger.info(f"[Poller:Debug] Skipping because type {ntype} is not in monitored types.")
                     continue
 
                 if from_user_id == self.client.user_id:
-                    logger.info("[Poller:Debug] Skipping because it's a notification about the bot's own action.")
                     continue
 
                 if from_user_id:
                     from src.repositories.blacklist_repo import BlacklistRepository
                     if await BlacklistRepository.is_blacklisted(from_user_id) or await BlacklistRepository.is_auto_blocked(from_user_id):
-                        logger.info(f"[Poller:Debug] Skipping because user {from_user_id} is blacklisted.")
                         continue
                     self._add_monitored_wall(from_user_id)
 
@@ -249,16 +251,9 @@ class OpenVKPoller:
                 is_wall_post = (ntype == 'wall')
                 is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
 
-                logger.info(
-                    f"[Poller:Debug] Check mention: key={mention_key}, is_reply={is_reply}, "
-                    f"is_wall_post={is_wall_post}, is_mention={is_mention} "
-                    f"(bot_id={self.client.user_id}, bot_username={self._bot_username})"
-                )
-
                 # Отвечаем без проверки на упоминания, если это прямой реплай на коммент бота
                 # или новый пост непосредственно на стене бота
                 if not is_reply and not is_wall_post and not is_mention:
-                    logger.info(f"[Poller:Debug] Notification {mention_key} skipped: no mention / not direct reply.")
                     continue
 
                 first_name = await self._get_user_first_name(from_user_id) if from_user_id else "Пользователь"
@@ -908,3 +903,119 @@ class OpenVKPoller:
             
         except Exception as e:
             logger.error(f"[StatsPost] Failed to update wall stats post: {e}", exc_info=True)
+
+    async def _generate_joke_via_gemini(self) -> str:
+        """Генерирует смешной анекдот через Gemini, если внешний API недоступен."""
+        try:
+            prompt = "Напиши один очень короткий, приличный и смешной анекдот на русском языке. Только сам анекдот, без вступлений и лишних слов."
+            resp = await self.gemini_service.client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt
+            )
+            joke = resp.text.strip() if resp.text else ""
+            if joke.startswith("```"):
+                joke = joke.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
+            return joke
+        except Exception as e:
+            logger.error(f"[Gifts] Failed to generate joke via Gemini: {e}")
+            return "Улыбнись! Желаю отличного настроения! 😊"
+
+    async def _fetch_joke_via_api(self) -> str:
+        """Получает случайный анекдот с внешнего бесплатного API rzhunemogu."""
+        try:
+            import httpx
+            import re
+            async with httpx.AsyncClient() as client:
+                resp = await client.get("http://rzhunemogu.ru/RandJSON.aspx?CType=1", timeout=5.0)
+                text = resp.content.decode('cp1251', errors='ignore')
+                match = re.search(r'\{"content":"(.*)"\}', text, re.DOTALL)
+                if match:
+                    joke_text = match.group(1).replace(r'\"', '"').replace(r'\r\n', '\n').replace(r'\n', '\n').strip()
+                    if joke_text:
+                        return joke_text
+                return text.strip()
+        except Exception as e:
+            logger.error(f"[Gifts] Failed to fetch joke via rzhunemogu: {e}")
+            return ""
+
+    async def _send_gift_with_joke(self, target_user_id: int, is_new_friend: bool = True):
+        """Отправляет случайный подарок с анекдотом пользователю."""
+        try:
+            import random
+            # Пул ID бесплатных подарков
+            gift_ids = [1, 3, 4, 14, 27, 30, 46, 62, 102]
+            gift_id = random.choice(gift_ids)
+            
+            # Сначала пробуем получить анекдот по API
+            joke = await self._fetch_joke_via_api()
+            if not joke:
+                # Если API лежит, используем Gemini
+                joke = await self._generate_joke_via_gemini()
+                
+            message = joke
+            
+            logger.info(f"[Gifts] Attempting to send gift {gift_id} to user {target_user_id}...")
+            res = await self.client.call_method("gifts.send", {
+                "user_ids": str(target_user_id),
+                "gift_id": gift_id,
+                "message": message
+            })
+            
+            response_data = res.get("response", {})
+            success = False
+            if isinstance(response_data, dict):
+                success = (response_data.get("success") == 1 or response_data.get("withdraw_votes") == 0)
+            elif isinstance(response_data, list) and response_data:
+                success = (response_data[0].get("success") == 1)
+            
+            if success:
+                logger.info(f"[Gifts] Successfully sent gift {gift_id} to user {target_user_id}")
+                # Помечаем в Redis, что подарок отправлен
+                await self.responder.redis.sadd("ovk:gifted_friends", str(target_user_id))
+            else:
+                logger.warning(f"[Gifts] Failed to send gift, response: {res}")
+                
+        except Exception as e:
+            logger.error(f"[Gifts] Error sending gift to {target_user_id}: {e}")
+
+    async def _process_old_friends_gifting(self):
+        """Опрашивает список существующих друзей и дарит подарок по одному за тик (чтобы не спамить)."""
+        import time
+        now = time.time()
+        
+        # Если очередь пуста, пробуем обновить её раз в 1 час
+        if not self._existing_friends_to_gift:
+            if now - self._last_friends_fetch_time >= 3600.0:
+                self._last_friends_fetch_time = now
+                try:
+                    logger.info("[Gifts] Fetching friends list to check for old friends gifting...")
+                    raw = await self.client.call_method("friends.get", {"count": 1000})
+                    response = raw.get("response", {})
+                    
+                    if isinstance(response, dict):
+                        friend_ids = response.get("items", [])
+                    elif isinstance(response, list):
+                        friend_ids = response
+                    else:
+                        friend_ids = []
+                        
+                    if friend_ids:
+                        # Фильтруем тех, кому мы уже дарили подарок
+                        ungifted = []
+                        for fid in friend_ids:
+                            is_gifted = await self.responder.redis.sismember("ovk:gifted_friends", str(fid))
+                            if not is_gifted:
+                                ungifted.append(fid)
+                        
+                        if ungifted:
+                            self._existing_friends_to_gift = ungifted
+                            logger.info(f"[Gifts] Found {len(ungifted)} old friends who haven't received a gift yet. Gifting queue loaded.")
+                except Exception as e:
+                    logger.error(f"[Gifts] Failed to fetch old friends list: {e}")
+                    
+        # Если в очереди кто-то есть, дарим ОДНОМУ другу за этот тик
+        if self._existing_friends_to_gift:
+            target_id = self._existing_friends_to_gift.pop(0)
+            is_gifted = await self.responder.redis.sismember("ovk:gifted_friends", str(target_id))
+            if not is_gifted:
+                await self._send_gift_with_joke(target_id, is_new_friend=False)
