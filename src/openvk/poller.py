@@ -328,7 +328,20 @@ class OpenVKPoller:
                             reply_prefix=reply_prefix
                         )
             except Exception as e:
-                logger.error(f"Error polling wall {wall_owner_id}: {e}", exc_info=True)
+                import httpx
+                is_permanent = False
+                status_code = None
+                if isinstance(e, httpx.HTTPStatusError):
+                    status_code = e.response.status_code
+                    if status_code in (400, 401, 403, 404):
+                        is_permanent = True
+                
+                if is_permanent:
+                    if wall_owner_id in self._monitored_walls:
+                        self._monitored_walls.remove(wall_owner_id)
+                    logger.warning(f"[Poller] Wall {wall_owner_id} is inaccessible (HTTP {status_code}). Removed from monitoring.")
+                else:
+                    logger.warning(f"[Poller] Temporary error polling wall {wall_owner_id}: {e}")
 
     async def _process_private_messages(self, db_settings):
         """Обрабатывает входящие личные сообщения (ЛС) от пользователей."""
