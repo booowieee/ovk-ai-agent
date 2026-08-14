@@ -259,6 +259,12 @@ class OpenVKPoller:
                                 (parent.get('to_id') if parent else None) or 
                                 self.client.user_id)
 
+                # Дедупликация: если этот ключ уже обработан (completed или в процессе), пропускаем!
+                # Это полностью убирает спам логов, resolve-имен и thrashing стен на повторных тиках
+                lock_state = await self.responder.redis.get(f"ovk:lock:{mention_key}")
+                if lock_state in (b"completed", b"processing", "completed", "processing"):
+                    continue
+
                 is_reply = (ntype == 'reply_comment')
                 is_wall_post = (ntype == 'wall')
                 is_mention = is_mention_of_user(text, self.client.user_id, self._bot_username)
