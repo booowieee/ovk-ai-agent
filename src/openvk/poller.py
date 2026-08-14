@@ -81,8 +81,8 @@ class OpenVKPoller:
                 # 6. Автодобавление в друзья
                 await self._auto_accept_friends()
 
-                # 7. Рассылка подарков старым друзьям (по одному за тик) - временно отключено для тестирования
-                # await self._process_old_friends_gifting()
+                # 7. Рассылка подарков старым друзьям (по одному за тик)
+                await self._process_old_friends_gifting()
 
                 # 8. Обновление закрепленного поста со статистикой
                 await self._check_and_update_stats_post()
@@ -176,8 +176,8 @@ class OpenVKPoller:
                         except Exception as stats_err:
                             logger.error(f"[Stats] Error saving last added friend: {stats_err}")
                             
-                        # Отправляем подарок новому другу! - временно отключено для тестирования
-                        # await self._send_gift_with_joke(uid, is_new_friend=True)
+                        # Отправляем подарок новому другу!
+                        await self._send_gift_with_joke(uid, is_new_friend=True)
                             
                     except Exception as e:
                         logger.error(f"Failed to accept friend request from user {uid}: {e}")
@@ -938,12 +938,72 @@ class OpenVKPoller:
             logger.error(f"[Gifts] Failed to fetch joke via rzhunemogu: {e}")
             return ""
 
+    def _extract_gift_id_from_url(self, image_url: str) -> Optional[int]:
+        """Парсит числовой ID подарка из URL картинки."""
+        if not image_url:
+            return None
+        import re
+        match = re.search(r'gift(\d+)_', image_url)
+        if match:
+            return int(match.group(1))
+        return None
+
+    async def _get_available_free_gift_ids(self) -> list[int]:
+        """Динамически запрашивает все доступные бесплатные ID подарков с ненулевым лимитом usages_left."""
+        try:
+            import time
+            now = time.time()
+            # Кешируем список на 1 час, чтобы не спамить API на каждом тике
+            if hasattr(self, '_cached_free_gifts') and hasattr(self, '_last_gifts_cache_time'):
+                if now - self._last_gifts_cache_time < 3600.0:
+                    if self._cached_free_gifts:
+                        return self._cached_free_gifts
+
+            logger.info("[Gifts] Requesting categories to build free gifts pool...")
+            cats_res = await self.client.call_method("gifts.getCategories")
+            categories = cats_res.get("response", [])
+            
+            free_ids = []
+            for cat in categories:
+                cat_id = cat.get("id")
+                if not cat_id:
+                    continue
+                try:
+                    # Запрашиваем подарки в категории
+                    gifts_res = await self.client.call_method("gifts.getGiftsInCategory", {"id": cat_id})
+                    gifts = gifts_res.get("response", [])
+                    for gift in gifts:
+                        # Проверяем, бесплатный ли подарок
+                        is_free = gift.get("is_free", False) or (gift.get("price") == 0)
+                        if is_free:
+                            usages_left = gift.get("usages_left")
+                            # Если usages_left отсутствует, считаем безлимитным. Иначе проверяем > 0
+                            if usages_left is None or (isinstance(usages_left, int) and usages_left > 0):
+                                image_url = gift.get("image", "")
+                                gift_id = self._extract_gift_id_from_url(image_url)
+                                if gift_id is not None:
+                                    free_ids.append(gift_id)
+                except Exception as cat_err:
+                    logger.error(f"[Gifts] Failed to get gifts in category {cat_id}: {cat_err}")
+            
+            self._cached_free_gifts = free_ids
+            self._last_gifts_cache_time = now
+            logger.info(f"[Gifts] Free gifts pool updated: {free_ids}")
+            return free_ids
+        except Exception as e:
+            logger.error(f"[Gifts] Failed to build free gifts list: {e}")
+            return [1] # Резервный ID на случай сбоя
+
     async def _send_gift_with_joke(self, target_user_id: int, is_new_friend: bool = True):
         """Отправляет случайный подарок с анекдотом пользователю."""
         try:
             import random
-            # Пул ID бесплатных подарков
-            gift_ids = [1, 3, 4, 14, 27, 30, 46, 62, 102]
+            # Динамически получаем доступные бесплатные подарки
+            gift_ids = await self._get_available_free_gift_ids()
+            if not gift_ids:
+                logger.warning(f"[Gifts] No free gifts with usages left available. Gifting to user {target_user_id} skipped.")
+                return
+                
             gift_id = random.choice(gift_ids)
             
             # Сначала пробуем получить анекдот по API
@@ -972,6 +1032,8 @@ class OpenVKPoller:
                 logger.info(f"[Gifts] Successfully sent gift {gift_id} to user {target_user_id}")
                 # Помечаем в Redis, что подарок отправлен
                 await self.responder.redis.sadd("ovk:gifted_friends", str(target_user_id))
+                # Сбрасываем кэш, чтобы при следующем запросе обновились usages_left
+                self._last_gifts_cache_time = 0.0
             else:
                 logger.warning(f"[Gifts] Failed to send gift, response: {res}")
                 
