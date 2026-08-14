@@ -12,6 +12,7 @@ def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text='Чёрный список'),
+                KeyboardButton(text='Статистика'),
                 KeyboardButton(text='Статус')
             ]
         ],

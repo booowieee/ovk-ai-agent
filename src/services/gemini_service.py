@@ -158,6 +158,8 @@ class GeminiService:
                             for part in content.parts:
                                 if part.inline_data and part.inline_data.data:
                                     logger.info(f"[Gemini:Image] Successfully generated image using {model_name}")
+                                    from src.repositories.stats_repo import StatsRepository
+                                    await StatsRepository.increment_global_stats(flux=1)
                                     return part.inline_data.data
                 except Exception as e:
                     logger.warning(f"[Gemini:Image] Failed to generate image with model {model_name}: {e}")
@@ -237,6 +239,8 @@ class GeminiService:
                                 img_res = await self.state.http_client.get(image_url, headers=headers, timeout=30.0)
                                 if img_res.status_code == 200 and img_res.content:
                                     logger.info(f"[Gemini:Image:Premium] Successfully generated image via Space '{space_id}' (use_token={use_token})")
+                                    from src.repositories.stats_repo import StatsRepository
+                                    await StatsRepository.increment_global_stats(flux=1)
                                     generated_image_bytes = img_res.content
                                     break
                                 else:
@@ -279,6 +283,8 @@ class GeminiService:
                                 except:
                                     pass
                             logger.info(f"[Gemini:Image:Premium] Successfully generated image via HF partner ({provider}:{model_id})")
+                            from src.repositories.stats_repo import StatsRepository
+                            await StatsRepository.increment_global_stats(flux=1)
                             return response.content
                         else:
                             logger.warning(f"[Gemini:Image:Premium] HF partner ({provider}:{model_id}) failed with status {response.status_code}: {response.text[:200]}")
@@ -297,6 +303,8 @@ class GeminiService:
                     response = await self.state.http_client.get(url, timeout=40.0)
                     if response.status_code == 200 and response.content:
                         logger.info("[Gemini:Image:Premium] Successfully generated image via gen.pollinations.ai (FLUX)")
+                        from src.repositories.stats_repo import StatsRepository
+                        await StatsRepository.increment_global_stats(flux=1)
                         return response.content
                     else:
                         logger.warning(f"[Gemini:Image:Premium] gen.pollinations.ai returned status code {response.status_code}")
@@ -316,6 +324,8 @@ class GeminiService:
                 response = await self.state.http_client.get(url, timeout=30.0)
                 if response.status_code == 200 and response.content:
                     logger.info("[Gemini:Image:Fallback] Successfully generated image via keyless Pollinations.ai")
+                    from src.repositories.stats_repo import StatsRepository
+                    await StatsRepository.increment_global_stats(fallback=1)
                     return response.content
                 else:
                     logger.error(f"[Gemini:Image:Fallback] Keyless Pollinations.ai returned status code {response.status_code}")

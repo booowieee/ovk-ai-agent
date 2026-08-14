@@ -41,6 +41,12 @@ def get_main_menu_keyboard(is_enabled: bool, image_gen_enabled: bool = False) ->
             ],
             [
                 InlineKeyboardButton(
+                    text="📊 Статистика", 
+                    callback_data="menu_stats"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="Статус", 
                     callback_data="menu_status"
                 )
@@ -54,6 +60,25 @@ def get_main_menu_keyboard(is_enabled: bool, image_gen_enabled: bool = False) ->
                     text="✅ Старт", 
                     callback_data="emergency_resume"
                 )
+            ]
+        ]
+    )
+    return keyboard
+
+def get_stats_keyboard() -> InlineKeyboardMarkup:
+    """
+    Создает клавиатуру для меню статистики.
+    """
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔄 Обновить", callback_data="menu_stats")
+            ],
+            [
+                InlineKeyboardButton(text="🧹 Сбросить статистику", callback_data="stats_clear")
+            ],
+            [
+                InlineKeyboardButton(text="« Назад", callback_data="main_menu")
             ]
         ]
     )

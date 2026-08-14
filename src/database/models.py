@@ -27,3 +27,25 @@ class AutoBlockedUser(Base):
     __tablename__ = "auto_blocked_users"
 
     vk_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
+class UserActivity(Base):
+    __tablename__ = "user_activities"
+
+    vk_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text_requests_count: Mapped[int] = mapped_column(Integer, default=0)
+    image_requests_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_active_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SystemStats(Base):
+    __tablename__ = "system_stats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    total_text_requests: Mapped[int] = mapped_column(Integer, default=0)
+    total_image_requests: Mapped[int] = mapped_column(Integer, default=0)
+    flux_success_count: Mapped[int] = mapped_column(Integer, default=0)
+    fallback_success_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_likes_count: Mapped[int] = mapped_column(Integer, default=0)

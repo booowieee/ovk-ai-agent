@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import select
 from src.config import settings
-from src.database.models import Base, SystemSettings, BlacklistedUser, AutoBlockedUser
+from src.database.models import Base, SystemSettings, BlacklistedUser, AutoBlockedUser, UserActivity, SystemStats
 from src.utils.logger import logger
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
@@ -33,3 +33,11 @@ async def init_db():
             session.add(new_settings)
             await session.commit()
             logger.info("Created default SystemSettings row.")
+
+        result_stats = await session.execute(select(SystemStats).where(SystemStats.id == 1))
+        stats_row = result_stats.scalar_one_or_none()
+        if not stats_row:
+            new_stats = SystemStats(id=1)
+            session.add(new_stats)
+            await session.commit()
+            logger.info("Created default SystemStats row.")

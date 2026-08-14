@@ -447,6 +447,16 @@ class OpenVKPoller:
                     if res.get('response') or res.get('error') is None:
                         await self.responder.mark_completed(mention_key)
                         logger.info(f"[PM] Successfully replied to user {from_id} for message {msg_id}")
+                        
+                        # Записываем статистику ЛС
+                        if from_id:
+                            try:
+                                first_name, last_name = await self._get_user_full_name(from_id)
+                                from src.repositories.stats_repo import StatsRepository
+                                await StatsRepository.increment_user_activity(from_id, first_name, last_name, is_image=False)
+                                await StatsRepository.increment_global_stats(text=1)
+                            except Exception as stats_err:
+                                logger.error(f"[Stats] Error updating PM stats: {stats_err}")
                     else:
                         logger.error(f"[PM] Failed to send reply message to user {from_id}: {res}. Releasing lock.")
                         await self.responder.release_lock(mention_key)
@@ -556,6 +566,11 @@ class OpenVKPoller:
 
             if result is not None:
                 logger.info(f"[Poller:GlobalFeed] Successfully commented on post {source_id}_{post_id}")
+                try:
+                    from src.repositories.stats_repo import StatsRepository
+                    await StatsRepository.increment_global_stats(text=1, likes=1)
+                except Exception as stats_err:
+                    logger.error(f"[Stats] Error updating global feed stats: {stats_err}")
                 await self.responder.add_like("post", source_id, post_id)
             else:
                 logger.error(f"[Poller:GlobalFeed] Failed to send comment to post {source_id}_{post_id}")
@@ -578,6 +593,18 @@ class OpenVKPoller:
         except Exception as e:
             logger.error(f"Error fetching user name for {user_id}: {e}")
         return "Пользователь"
+
+    async def _get_user_full_name(self, user_id: int) -> tuple[str, str]:
+        try:
+            data = await self.client.call_method("users.get", {"user_ids": user_id})
+            items = data.get('response', [])
+            if items:
+                first_name = items[0].get('first_name', '')
+                last_name = items[0].get('last_name', '')
+                return first_name, last_name
+        except Exception as e:
+            logger.error(f"Error fetching full user name for {user_id}: {e}")
+        return "Пользователь", ""
 
     async def _find_post_id_for_comment(self, comment_id: int, from_user_id: Optional[int]) -> tuple[Optional[int], Optional[int]]:
         possible_owners = []
@@ -685,6 +712,21 @@ class OpenVKPoller:
             if result is not None:
                 await self.responder.mark_completed(mention_key)
                 logger.info(f"[Bot] Successfully replied to {mention_key}")
+                
+                # Записываем статистику упоминания
+                if from_user_id:
+                    try:
+                        first_name, last_name = await self._get_user_full_name(from_user_id)
+                        from src.repositories.stats_repo import StatsRepository
+                        await StatsRepository.increment_user_activity(from_user_id, first_name, last_name, is_image=bool(attachments))
+                        await StatsRepository.increment_global_stats(
+                            text=1,
+                            images=1 if attachments else 0,
+                            likes=1
+                        )
+                    except Exception as stats_err:
+                        logger.error(f"[Stats] Error updating stats: {stats_err}")
+
                 if comment_id is not None:
                     await self.responder.add_like("comment", owner_id, comment_id)
                 else:

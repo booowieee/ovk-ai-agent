@@ -387,3 +387,67 @@ async def cb_blacklist_clear_auto(callback: types.CallbackQuery):
         await BlacklistRepository.remove_from_auto_blocked(vk_id)
     await callback.message.edit_text("Авто-ЧС успешно очищен.", reply_markup=get_back_to_blacklist_keyboard(), parse_mode="HTML")
     await callback.answer()
+
+
+@router.callback_query(F.data == "menu_stats")
+async def cb_menu_stats(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    await _show_stats(callback.message)
+    await callback.answer()
+
+
+@router.message(F.text == 'Статистика')
+async def msg_stats(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    await _show_stats(message)
+
+
+async def _show_stats(message: types.Message):
+    from src.repositories.stats_repo import StatsRepository
+    from src.control_bot.keyboards.inline import get_stats_keyboard
+    
+    stats = await StatsRepository.get_stats()
+    g = stats["global"]
+    
+    text = (
+        "<b>📊 Статистика использования бота:</b>\n\n"
+        f"• Всего текстовых ответов: <b>{g['total_text_requests']}</b>\n"
+        f"• Сгенерировано картинок: <b>{g['total_image_requests']}</b>\n"
+        f"  — <i>Качественный FLUX:</i> <b>{g['flux_success_count']}</b>\n"
+        f"  — <i>Временный Sana (Сбой):</i> <b>{g['fallback_success_count']}</b>\n"
+        f"• Поставлено лайков: <b>{g['total_likes_count']}</b>\n\n"
+    )
+    
+    text += "<b>🏆 Топ-5 пользователей по тексту:</b>\n"
+    if not stats["top_text"]:
+        text += "<i>Нет данных</i>\n\n"
+    else:
+        for i, u in enumerate(stats["top_text"], 1):
+            text += f"{i}. <a href='https://openvk.org/id{u['vk_id']}'>{u['first_name']} {u['last_name']}</a> — {u['count']} запр.\n"
+        text += "\n"
+        
+    text += "<b>🖼 Топ-5 по генерации картинок:</b>\n"
+    if not stats["top_image"]:
+        text += "<i>Нет данных</i>\n\n"
+    else:
+        for i, u in enumerate(stats["top_image"], 1):
+            text += f"{i}. <a href='https://openvk.org/id{u['vk_id']}'>{u['first_name']} {u['last_name']}</a> — {u['count']} изобр.\n"
+        text += "\n"
+        
+    if isinstance(message, types.Message):
+        if message.from_user.id == message.chat.id: # not callback edit
+            await message.answer(text, reply_markup=get_stats_keyboard(), parse_mode="HTML", disable_web_page_preview=True)
+        else: # callback edit
+            await message.edit_text(text, reply_markup=get_stats_keyboard(), parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "stats_clear")
+async def cb_stats_clear(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    from src.repositories.stats_repo import StatsRepository
+    await StatsRepository.clear_stats()
+    await callback.message.edit_text("Статистика сброшена.", reply_markup=get_stats_keyboard(), parse_mode="HTML")
+    await callback.answer("Статистика сброшена.")
