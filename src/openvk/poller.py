@@ -1065,9 +1065,18 @@ class OpenVKPoller:
                         # Фильтруем тех, кому мы уже дарили подарок
                         ungifted = []
                         for fid in friend_ids:
-                            is_gifted = await self.responder.redis.sismember("ovk:gifted_friends", str(fid))
+                            uid = None
+                            if isinstance(fid, dict):
+                                uid = fid.get('id') or fid.get('user_id')
+                            elif isinstance(fid, (int, str)):
+                                uid = int(fid)
+                                
+                            if not uid:
+                                continue
+                                
+                            is_gifted = await self.responder.redis.sismember("ovk:gifted_friends", str(uid))
                             if not is_gifted:
-                                ungifted.append(fid)
+                                ungifted.append(uid)
                         
                         if ungifted:
                             self._existing_friends_to_gift = ungifted
