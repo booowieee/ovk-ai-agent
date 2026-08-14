@@ -14,3 +14,16 @@ class SystemSettings(Base):
     openvk_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     openvk_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     poll_interval: Mapped[int] = mapped_column(Integer, default=10)
+
+
+class BlacklistedUser(Base):
+    __tablename__ = "blacklisted_users"
+
+    vk_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AutoBlockedUser(Base):
+    __tablename__ = "auto_blocked_users"
+
+    vk_id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -3,9 +3,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 def get_main_menu_keyboard(is_enabled: bool, image_gen_enabled: bool = False) -> InlineKeyboardMarkup:
     """
     Создает и возвращает главное инлайн меню.
-    
-    :param is_enabled: Текущий статус работы AI бота.
-    :param image_gen_enabled: Текущий статус генерации изображений.
     """
     ai_status_text = "Включен" if is_enabled else "Выключен"
     image_gen_status_text = "Включена" if image_gen_enabled else "Выключена"
@@ -38,21 +35,51 @@ def get_main_menu_keyboard(is_enabled: bool, image_gen_enabled: bool = False) ->
             ],
             [
                 InlineKeyboardButton(
+                    text="🚫 Чёрный список", 
+                    callback_data="menu_blacklist"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="Статус", 
                     callback_data="menu_status"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="Аварийная остановка", 
+                    text="🚨 Аварийный Стоп", 
                     callback_data="emergency_stop"
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
-                    text="Снять аварийную остановку", 
+                    text="✅ Старт", 
                     callback_data="emergency_resume"
                 )
+            ]
+        ]
+    )
+    return keyboard
+
+def get_blacklist_keyboard() -> InlineKeyboardMarkup:
+    """
+    Создает клавиатуру для управления черными списками.
+    """
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📋 Показать ЧС", callback_data="blacklist_show"),
+                InlineKeyboardButton(text="➕ Добавить в ЧС", callback_data="blacklist_add")
+            ],
+            [
+                InlineKeyboardButton(text="➖ Удалить из ЧС", callback_data="blacklist_remove")
+            ],
+            [
+                InlineKeyboardButton(text="🤖 Кто меня заблокировал", callback_data="blacklist_autoblocked")
+            ],
+            [
+                InlineKeyboardButton(text="🧹 Очистить авто-ЧС", callback_data="blacklist_clear_auto")
+            ],
+            [
+                InlineKeyboardButton(text="« Назад", callback_data="main_menu")
             ]
         ]
     )
@@ -68,6 +95,23 @@ def get_back_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="Назад", 
                     callback_data="main_menu"
+                )
+            ]
+        ]
+    )
+    return keyboard
+
+
+def get_back_to_blacklist_keyboard() -> InlineKeyboardMarkup:
+    """
+    Создает клавиатуру с кнопкой возврата в меню черного списка.
+    """
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Назад", 
+                    callback_data="menu_blacklist"
                 )
             ]
         ]

@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import select
 from src.config import settings
-from src.database.models import Base, SystemSettings
+from src.database.models import Base, SystemSettings, BlacklistedUser, AutoBlockedUser
 from src.utils.logger import logger
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False)

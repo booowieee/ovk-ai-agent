@@ -198,6 +198,20 @@ async def msg_prompt(message: types.Message, state: FSMContext):
     await message.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await state.set_state(PromptStates.waiting_for_prompt)
 
+
+@router.message(F.text == 'Чёрный список')
+async def msg_blacklist(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await message.answer(
+        "<b>Управление чёрными списками:</b>\n\n"
+        "• <b>Ручной ЧС:</b> Полностью блокирует реакцию бота на пользователя (игнорируются комментарии, упоминания, ЛС).\n"
+        "• <b>Авто-ЧС:</b> Демонстрационный список пользователей, которые заблокировали бота (или у которых закрыт профиль/комменты). Бот заносит их туда автоматически при ошибках отправки.",
+        reply_markup=get_blacklist_keyboard(),
+        parse_mode="HTML"
+    )
+
 @router.message(PromptStates.waiting_for_prompt)
 async def process_prompt_update(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -235,3 +249,141 @@ async def cb_emergency_resume(callback: types.CallbackQuery, redis):
         parse_mode="HTML"
     )
     await callback.answer("Работа восстановлена.")
+
+
+class BlacklistStates(StatesGroup):
+    waiting_for_add_id = State()
+    waiting_for_remove_id = State()
+
+
+from src.repositories.blacklist_repo import BlacklistRepository
+from src.control_bot.keyboards.inline import get_blacklist_keyboard, get_back_to_blacklist_keyboard
+
+
+@router.callback_query(F.data == "menu_blacklist")
+async def cb_menu_blacklist(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.clear()
+    await callback.message.edit_text(
+        "<b>Управление чёрными списками:</b>\n\n"
+        "• <b>Ручной ЧС:</b> Полностью блокирует реакцию бота на пользователя (игнорируются комментарии, упоминания, ЛС).\n"
+        "• <b>Авто-ЧС:</b> Демонстрационный список пользователей, которые заблокировали бота (или у которых закрыт профиль/комменты). Бот заносит их туда автоматически при ошибках отправки.",
+        reply_markup=get_blacklist_keyboard(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "blacklist_show")
+async def cb_blacklist_show(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    users = await BlacklistRepository.get_blacklist()
+    if not users:
+        text = "Ручной черный список пуст."
+    else:
+        text = "<b>Ручной черный список:</b>\n\n"
+        for i, u in enumerate(users, 1):
+            reason = f" (причина: {u['reason']})" if u['reason'] else ""
+            text += f"{i}. ID: <code>{u['vk_id']}</code>{reason}\n"
+    await callback.message.edit_text(text, reply_markup=get_back_to_blacklist_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "blacklist_add")
+async def cb_blacklist_add(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.message.edit_text(
+        "Отправьте ID пользователя OpenVK, которого хотите добавить в ручной ЧС.\n"
+        "Можно отправить в формате: <code>ID [причина]</code> (например, <code>12345 спамер</code>).",
+        reply_markup=get_back_to_blacklist_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.set_state(BlacklistStates.waiting_for_add_id)
+    await callback.answer()
+
+
+@router.message(BlacklistStates.waiting_for_add_id)
+async def process_blacklist_add(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    
+    parts = message.text.strip().split(maxsplit=1)
+    if not parts:
+        await message.answer("Неверный формат. Попробуйте еще раз.")
+        return
+        
+    try:
+        vk_id = int(parts[0])
+    except ValueError:
+        await message.answer("ID должен быть числом. Попробуйте еще раз.")
+        return
+        
+    reason = parts[1] if len(parts) > 1 else None
+    added = await BlacklistRepository.add_to_blacklist(vk_id, reason)
+    
+    await state.clear()
+    if added:
+        await message.answer(f"Пользователь с ID <code>{vk_id}</code> добавлен в ручной ЧС.", reply_markup=get_back_to_blacklist_keyboard(), parse_mode="HTML")
+    else:
+        await message.answer(f"Запись для пользователя с ID <code>{vk_id}</code> обновлена.", reply_markup=get_back_to_blacklist_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "blacklist_remove")
+async def cb_blacklist_remove(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.message.edit_text(
+        "Отправьте ID пользователя OpenVK, которого хотите удалить из ручного ЧС.",
+        reply_markup=get_back_to_blacklist_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.set_state(BlacklistStates.waiting_for_remove_id)
+    await callback.answer()
+
+
+@router.message(BlacklistStates.waiting_for_remove_id)
+async def process_blacklist_remove(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+        
+    try:
+        vk_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("ID должен быть числом. Попробуйте еще раз.")
+        return
+        
+    removed = await BlacklistRepository.remove_from_blacklist(vk_id)
+    await state.clear()
+    if removed:
+        await message.answer(f"Пользователь с ID <code>{vk_id}</code> удален из ручного ЧС.", reply_markup=get_back_to_blacklist_keyboard(), parse_mode="HTML")
+    else:
+        await message.answer(f"Пользователь с ID <code>{vk_id}</code> не найден в ЧС.", reply_markup=get_back_to_blacklist_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "blacklist_autoblocked")
+async def cb_blacklist_autoblocked(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    users = await BlacklistRepository.get_auto_blocked()
+    if not users:
+        text = "Авто-ЧС пуст. Блокировок бота не зафиксировано."
+    else:
+        text = "<b>Список пользователей, заблокировавших бота (авто-ЧС):</b>\n\n"
+        for i, vk_id in enumerate(users, 1):
+            text += f"{i}. ID: <code>{vk_id}</code>\n"
+    await callback.message.edit_text(text, reply_markup=get_back_to_blacklist_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "blacklist_clear_auto")
+async def cb_blacklist_clear_auto(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    users = await BlacklistRepository.get_auto_blocked()
+    for vk_id in users:
+        await BlacklistRepository.remove_from_auto_blocked(vk_id)
+    await callback.message.edit_text("Авто-ЧС успешно очищен.", reply_markup=get_back_to_blacklist_keyboard(), parse_mode="HTML")
+    await callback.answer()

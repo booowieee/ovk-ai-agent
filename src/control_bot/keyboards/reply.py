@@ -11,6 +11,7 @@ def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
                 KeyboardButton(text='Промпт')
             ],
             [
+                KeyboardButton(text='Чёрный список'),
                 KeyboardButton(text='Статус')
             ]
         ],

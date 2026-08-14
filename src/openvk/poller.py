@@ -191,6 +191,9 @@ class OpenVKPoller:
                     continue
 
                 if from_user_id:
+                    from src.repositories.blacklist_repo import BlacklistRepository
+                    if await BlacklistRepository.is_blacklisted(from_user_id) or await BlacklistRepository.is_auto_blocked(from_user_id):
+                        continue
                     self._add_monitored_wall(from_user_id)
 
                 # Определяем ключи блокировки и параметры отправки
@@ -277,6 +280,10 @@ class OpenVKPoller:
                     # Проверяем, если это пост на стене бота, оставленный другим пользователем
                     is_post_on_bot_wall = (owner_id == self.client.user_id)
                     post_author = post.get('from_id')
+                    if post_author:
+                        from src.repositories.blacklist_repo import BlacklistRepository
+                        if await BlacklistRepository.is_blacklisted(post_author) or await BlacklistRepository.is_auto_blocked(post_author):
+                            continue
                     post_text = post.get('text', '')
                     
                     # Проверяем, есть ли упоминание бота в тексте поста на чужой стене
@@ -307,6 +314,10 @@ class OpenVKPoller:
                     for comment in comments:
                         cid = comment.get('id')
                         from_user_id = comment.get('from_id')
+                        if from_user_id:
+                            from src.repositories.blacklist_repo import BlacklistRepository
+                            if await BlacklistRepository.is_blacklisted(from_user_id) or await BlacklistRepository.is_auto_blocked(from_user_id):
+                                continue
                         text = comment.get('text', '')
 
                         if from_user_id == self.client.user_id:
@@ -339,7 +350,9 @@ class OpenVKPoller:
                 if is_permanent:
                     if wall_owner_id in self._monitored_walls:
                         self._monitored_walls.remove(wall_owner_id)
-                    logger.warning(f"[Poller] Wall {wall_owner_id} is inaccessible (HTTP {status_code}). Removed from monitoring.")
+                    from src.repositories.blacklist_repo import BlacklistRepository
+                    await BlacklistRepository.add_to_auto_blocked(wall_owner_id)
+                    logger.warning(f"[Poller] Wall {wall_owner_id} is inaccessible (HTTP {status_code}). Removed from monitoring & added to auto-blocked.")
                 else:
                     logger.warning(f"[Poller] Temporary error polling wall {wall_owner_id}: {e}")
 
@@ -382,6 +395,18 @@ class OpenVKPoller:
                 # Пропускаем сообщения от самого себя
                 if from_id == self.client.user_id:
                     continue
+
+                if from_id:
+                    from src.repositories.blacklist_repo import BlacklistRepository
+                    if await BlacklistRepository.is_blacklisted(from_id) or await BlacklistRepository.is_auto_blocked(from_id):
+                        try:
+                            await self.client.call_method("messages.markAsRead", {
+                                "peer_id": peer_id,
+                                "message_ids": str(msg_id)
+                            })
+                        except:
+                            pass
+                        continue
 
                 if not peer_id or not msg_id:
                     continue
@@ -429,6 +454,11 @@ class OpenVKPoller:
                 except Exception as e:
                     logger.error(f"[PM] Error generating/sending response for message {msg_id}: {e}. Releasing lock.", exc_info=True)
                     await self.responder.release_lock(mention_key)
+                    if from_id and from_id > 0:
+                        import httpx
+                        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (400, 401, 403, 404):
+                            from src.repositories.blacklist_repo import BlacklistRepository
+                            await BlacklistRepository.add_to_auto_blocked(from_id)
 
         except Exception as e:
             logger.error(f"Error in private messages processing: {e}", exc_info=True)
@@ -463,6 +493,13 @@ class OpenVKPoller:
                 # Игнорируем собственные посты
                 if source_id == self.client.user_id:
                     continue
+
+                # Игнорируем пользователей из черного списка
+                if source_id:
+                    actual_id = abs(source_id)
+                    from src.repositories.blacklist_repo import BlacklistRepository
+                    if await BlacklistRepository.is_blacklisted(actual_id) or await BlacklistRepository.is_auto_blocked(actual_id):
+                        continue
 
                 # Игнорируем посты без текста (только фото/видео) или слишком короткие
                 if not text or len(text) < 10:

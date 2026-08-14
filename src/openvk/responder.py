@@ -29,6 +29,15 @@ class OpenVKResponder:
         key = f"ovk:lock:{mention_key}"
         await self.redis.set(key, "completed", ex=604800)
 
+    async def _check_and_register_auto_block(self, owner_id: int, e: Exception):
+        if owner_id and owner_id > 0:
+            import httpx
+            if isinstance(e, httpx.HTTPStatusError):
+                if e.response.status_code in (400, 401, 403, 404):
+                    from src.repositories.blacklist_repo import BlacklistRepository
+                    await BlacklistRepository.add_to_auto_blocked(owner_id)
+                    logger.warning(f"[Responder] Detected block from user {owner_id} (HTTP {e.response.status_code}). Added to auto-blocked.")
+
     async def reply_to_comment(self, owner_id: int, post_id: int, comment_id: int,
                                message: str, guid: Optional[int] = None,
                                attachments: Optional[str] = None) -> Optional[int]:
@@ -40,6 +49,7 @@ class OpenVKResponder:
             )
         except Exception as e:
             logger.error(f"Error replying to comment {comment_id}: {e}")
+            await self._check_and_register_auto_block(owner_id, e)
             return None
 
     async def reply_to_post(self, owner_id: int, post_id: int,
@@ -52,6 +62,7 @@ class OpenVKResponder:
             )
         except Exception as e:
             logger.error(f"Error replying to post {post_id}: {e}")
+            await self._check_and_register_auto_block(owner_id, e)
             return None
 
     async def add_like(self, type: str, owner_id: int, item_id: int):
@@ -65,3 +76,4 @@ class OpenVKResponder:
             })
         except Exception as e:
             logger.error(f"Failed to add like to {type} {owner_id}_{item_id}: {e}")
+            await self._check_and_register_auto_block(owner_id, e)
