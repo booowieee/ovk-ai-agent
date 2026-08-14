@@ -74,6 +74,7 @@ class OpenVKClient:
     async def create_comment(self, owner_id: int, post_id: int, message: str,
                              reply_to_comment: int = None, guid: int = None,
                              attachments: str = None) -> int:
+        logger.info(f"[Client:Comment] create_comment: owner_id={owner_id}, post_id={post_id}, reply_to_comment={reply_to_comment}")
         params = {'owner_id': owner_id, 'post_id': post_id, 'message': message}
         if reply_to_comment is not None:
             params['reply_to_comment'] = reply_to_comment
