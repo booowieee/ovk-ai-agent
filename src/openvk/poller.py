@@ -41,6 +41,7 @@ class OpenVKPoller:
         self._last_online_time: float = 0.0
         self._last_friend_check_time: float = 0.0
         self._last_global_feed_time: float = 0.0
+        self._last_stats_post_update: float = 0.0
 
     async def run(self):
         logger.info("Starting OpenVK poller...")
@@ -77,6 +78,9 @@ class OpenVKPoller:
 
                 # 6. Автодобавление в друзья
                 await self._auto_accept_friends()
+
+                # 7. Обновление закрепленного поста со статистикой
+                await self._check_and_update_stats_post()
 
             except Exception as e:
                 logger.error(f"Error in poller loop: {e}", exc_info=True)
@@ -705,36 +709,108 @@ class OpenVKPoller:
             guid = int(hashlib.md5(mention_key.encode()).hexdigest()[:8], 16)
 
             if comment_id is not None:
-                result = await self.responder.reply_to_comment(owner_id, post_id, comment_id, response, guid=guid, attachments=attachments)
+                await self.responder.reply_to_comment(owner_id, post_id, comment_id, response, guid=guid, attachments=attachments)
             else:
-                result = await self.responder.reply_to_post(owner_id, post_id, response, guid=guid, attachments=attachments)
+                await self.responder.reply_to_post(owner_id, post_id, response, guid=guid, attachments=attachments)
 
-            if result is not None:
-                await self.responder.mark_completed(mention_key)
-                logger.info(f"[Bot] Successfully replied to {mention_key}")
-                
-                # Записываем статистику упоминания
-                if from_user_id:
-                    try:
-                        first_name, last_name = await self._get_user_full_name(from_user_id)
-                        from src.repositories.stats_repo import StatsRepository
-                        await StatsRepository.increment_user_activity(from_user_id, first_name, last_name, is_image=bool(attachments))
-                        await StatsRepository.increment_global_stats(
-                            text=1,
-                            images=1 if attachments else 0,
-                            likes=1
-                        )
-                    except Exception as stats_err:
-                        logger.error(f"[Stats] Error updating stats: {stats_err}")
+            await self.responder.mark_completed(mention_key)
+            logger.info(f"[Bot] Successfully replied to {mention_key}")
+            
+            # Записываем статистику упоминания
+            if from_user_id:
+                try:
+                    first_name, last_name = await self._get_user_full_name(from_user_id)
+                    from src.repositories.stats_repo import StatsRepository
+                    await StatsRepository.increment_user_activity(from_user_id, first_name, last_name, is_image=bool(attachments))
+                    await StatsRepository.increment_global_stats(
+                        text=1,
+                        images=1 if attachments else 0,
+                        likes=1
+                    )
+                except Exception as stats_err:
+                    logger.error(f"[Stats] Error updating stats: {stats_err}")
 
-                if comment_id is not None:
-                    await self.responder.add_like("comment", owner_id, comment_id)
-                else:
-                    await self.responder.add_like("post", owner_id, post_id)
+            if comment_id is not None:
+                await self.responder.add_like("comment", owner_id, comment_id)
             else:
-                logger.error(f"[Bot] Failed to send reply to OpenVK for {mention_key}. Releasing lock.")
-                await self.responder.release_lock(mention_key)
+                await self.responder.add_like("post", owner_id, post_id)
 
         except Exception as e:
-            logger.error(f"Error generating/sending response for {mention_key}: {e}. Releasing lock.", exc_info=True)
-            await self.responder.release_lock(mention_key)
+            import httpx
+            is_permanent = False
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (400, 401, 403, 404):
+                is_permanent = True
+                
+            if is_permanent:
+                logger.warning(f"[Bot] Permanent error for {mention_key}: {e}. Marking completed to prevent loop.")
+                await self.responder.mark_completed(mention_key)
+            else:
+                logger.error(f"Error generating/sending response for {mention_key}: {e}. Releasing lock.", exc_info=True)
+                await self.responder.release_lock(mention_key)
+
+    async def _check_and_update_stats_post(self):
+        from src.config import settings
+        if not settings.OVK_STATS_POST_ID:
+            return
+
+        import time
+        now = time.time()
+        # Обновляем пост раз в 10 минут (600 секунд)
+        if now - self._last_stats_post_update < 600:
+            return
+
+        self._last_stats_post_update = now
+
+        try:
+            from src.repositories.stats_repo import StatsRepository
+            from datetime import datetime
+            
+            stats = await StatsRepository.get_stats()
+            g = stats["global"]
+            
+            # Форматируем красивый текст поста для OpenVK
+            text = (
+                "📊 [ОТКРЫТАЯ СТАТИСТИКА ИСПОЛЬЗОВАНИЯ ИИ-БОТА]\n\n"
+                "📈 Глобальные показатели:\n"
+                f"• Всего ответов: {g['total_text_requests']}\n"
+                f"• Сгенерировано картинок: {g['total_image_requests']} "
+                f"(FLUX: {g['flux_success_count']}, Sana: {g['fallback_success_count']})\n"
+                f"• Поставлено лайков: {g['total_likes_count']}\n\n"
+                
+                "🏆 ТОП-5 активных собеседников (Текст):\n"
+            )
+            
+            if not stats["top_text"]:
+                text += "— Нет данных\n"
+            else:
+                for i, u in enumerate(stats["top_text"], 1):
+                    text += f"{i}. id{u['vk_id']} ({u['first_name']} {u['last_name']}) — {u['count']} запросов\n"
+                    
+            text += "\n🖼 ТОП-5 генераторов (Картинки):\n"
+            if not stats["top_image"]:
+                text += "— Нет данных\n"
+            else:
+                for i, u in enumerate(stats["top_image"], 1):
+                    text += f"{i}. id{u['vk_id']} ({u['first_name']} {u['last_name']}) — {u['count']} картинок\n"
+                    
+            text += f"\nПоследнее обновление: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} MSK"
+            
+            post_setting = str(settings.OVK_STATS_POST_ID).strip()
+            if "_" in post_setting:
+                parts = post_setting.split("_")
+                owner_id = int(parts[0])
+                post_id = int(parts[1])
+            else:
+                owner_id = self.client.user_id
+                post_id = int(post_setting)
+
+            logger.info(f"[StatsPost] Updating stats post {owner_id}_{post_id}...")
+            res = await self.client.call_method("wall.edit", {
+                "owner_id": owner_id,
+                "post_id": post_id,
+                "message": text
+            })
+            logger.info(f"[StatsPost] Edit post response: {res}")
+            
+        except Exception as e:
+            logger.error(f"[StatsPost] Failed to update wall stats post: {e}", exc_info=True)

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     OVK_INSTANCE_URL: str = "https://openvk.org"
     OVK_ACCESS_TOKEN: str = ""
     OVK_USER_ID: int = 0
+    OVK_STATS_POST_ID: str = ""
     
     # Premium Image Generation (Optional fallback API keys)
     HUGGINGFACE_API_KEY: str = ""

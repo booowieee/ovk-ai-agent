@@ -75,9 +75,6 @@ def get_stats_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🔄 Обновить", callback_data="menu_stats")
             ],
             [
-                InlineKeyboardButton(text="🧹 Сбросить статистику", callback_data="stats_clear")
-            ],
-            [
                 InlineKeyboardButton(text="« Назад", callback_data="main_menu")
             ]
         ]

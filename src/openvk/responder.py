@@ -30,7 +30,7 @@ class OpenVKResponder:
         await self.redis.set(key, "completed", ex=604800)
 
     async def _check_and_register_auto_block(self, owner_id: int, e: Exception):
-        if owner_id and owner_id > 0:
+        if owner_id and owner_id > 0 and owner_id != self.client.user_id:
             import httpx
             if isinstance(e, httpx.HTTPStatusError):
                 if e.response.status_code in (400, 401, 403, 404):
@@ -50,7 +50,7 @@ class OpenVKResponder:
         except Exception as e:
             logger.error(f"Error replying to comment {comment_id}: {e}")
             await self._check_and_register_auto_block(owner_id, e)
-            return None
+            raise
 
     async def reply_to_post(self, owner_id: int, post_id: int,
                             message: str, guid: Optional[int] = None,
@@ -63,7 +63,7 @@ class OpenVKResponder:
         except Exception as e:
             logger.error(f"Error replying to post {post_id}: {e}")
             await self._check_and_register_auto_block(owner_id, e)
-            return None
+            raise
 
     async def add_like(self, type: str, owner_id: int, item_id: int):
         """Ставит лайк на пост или комментарий."""

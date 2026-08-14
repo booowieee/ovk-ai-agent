@@ -443,11 +443,10 @@ async def _show_stats(message: types.Message):
             await message.edit_text(text, reply_markup=get_stats_keyboard(), parse_mode="HTML", disable_web_page_preview=True)
 
 
-@router.callback_query(F.data == "stats_clear")
-async def cb_stats_clear(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@router.message(Command("clear_stats"))
+async def cmd_clear_stats(message: types.Message):
+    if not is_admin(message.from_user.id):
         return
     from src.repositories.stats_repo import StatsRepository
     await StatsRepository.clear_stats()
-    await callback.message.edit_text("Статистика сброшена.", reply_markup=get_stats_keyboard(), parse_mode="HTML")
-    await callback.answer("Статистика сброшена.")
+    await message.answer("✅ Статистика успешно сброшена.")
