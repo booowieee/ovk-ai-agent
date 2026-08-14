@@ -17,6 +17,9 @@ class BlacklistRepository:
 
     @staticmethod
     async def add_to_blacklist(vk_id: int, reason: str = None) -> bool:
+        from src.config import settings
+        if vk_id == settings.OVK_USER_ID:
+            return False
         async with async_session_factory() as session:
             # Check if already exists
             result = await session.execute(select(BlacklistedUser).where(BlacklistedUser.vk_id == vk_id))
@@ -41,6 +44,9 @@ class BlacklistRepository:
 
     @staticmethod
     async def add_to_auto_blocked(vk_id: int) -> bool:
+        from src.config import settings
+        if vk_id == settings.OVK_USER_ID:
+            return False
         async with async_session_factory() as session:
             result = await session.execute(select(AutoBlockedUser).where(AutoBlockedUser.vk_id == vk_id))
             exists = result.scalar_one_or_none()

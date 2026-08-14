@@ -12,6 +12,13 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
     
     async with async_session_factory() as session:
+        # Удаляем ID самого бота из черных списков (если он туда попал ранее)
+        from sqlalchemy import delete
+        if settings.OVK_USER_ID:
+            await session.execute(delete(BlacklistedUser).where(BlacklistedUser.vk_id == settings.OVK_USER_ID))
+            await session.execute(delete(AutoBlockedUser).where(AutoBlockedUser.vk_id == settings.OVK_USER_ID))
+            await session.commit()
+
         result = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
         settings_row = result.scalar_one_or_none()
         if not settings_row:
