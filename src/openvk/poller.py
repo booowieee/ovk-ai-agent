@@ -842,12 +842,69 @@ class OpenVKPoller:
                 post_id = int(post_setting)
 
             logger.info(f"[StatsPost] Updating stats post {owner_id}_{post_id}...")
-            res = await self.client.call_method("wall.edit", {
-                "owner_id": owner_id,
-                "post_id": post_id,
-                "message": text
-            })
-            logger.info(f"[StatsPost] Edit post response: {res}")
+            import httpx
+            is_permanent_error = False
+            
+            try:
+                res = await self.client.call_method("wall.edit", {
+                    "owner_id": owner_id,
+                    "post_id": post_id,
+                    "message": text
+                })
+                logger.info(f"[StatsPost] Edit post response: {res}")
+            except Exception as edit_err:
+                if isinstance(edit_err, httpx.HTTPStatusError):
+                    if edit_err.response.status_code in (400, 403, 404):
+                        is_permanent_error = True
+                elif "OpenVK API error" in str(edit_err):
+                    is_permanent_error = True
+                
+                if not is_permanent_error:
+                    # Временная сетевая ошибка (502, таймаут) - прокидываем дальше
+                    raise edit_err
+                
+                logger.warning(
+                    f"[StatsPost] Permanent edit error for post {owner_id}_{post_id}: {edit_err}. "
+                    f"Attempting to re-create the stats post..."
+                )
+                
+                # 1. Создаем новый пост со статистикой
+                post_res = await self.client.call_method("wall.post", {
+                    "owner_id": owner_id,
+                    "message": text
+                })
+                new_post_id = post_res.get("response", {}).get("post_id")
+                if not new_post_id:
+                    raise Exception(f"Failed to create new stats post: {post_res}")
+                
+                logger.info(f"[StatsPost] Created new stats post {owner_id}_{new_post_id}")
+                
+                # 2. Пытаемся удалить старый пост
+                try:
+                    await self.client.call_method("wall.delete", {
+                        "owner_id": owner_id,
+                        "post_id": post_id
+                    })
+                    logger.info(f"[StatsPost] Deleted old stats post {owner_id}_{post_id}")
+                except Exception as del_err:
+                    logger.error(f"[StatsPost] Failed to delete old post {owner_id}_{post_id}: {del_err}")
+                
+                # 3. Пытаемся закрепить новый пост
+                try:
+                    await self.client.call_method("wall.pin", {
+                        "owner_id": owner_id,
+                        "post_id": new_post_id
+                    })
+                    logger.info(f"[StatsPost] Pinned new stats post {owner_id}_{new_post_id}")
+                except Exception as pin_err:
+                    logger.error(f"[StatsPost] Failed to pin new post {owner_id}_{new_post_id}: {pin_err}")
+                
+                # 4. Обновляем ID в настройках в памяти
+                if "_" in post_setting:
+                    settings.OVK_STATS_POST_ID = f"{owner_id}_{new_post_id}"
+                else:
+                    settings.OVK_STATS_POST_ID = str(new_post_id)
+                logger.info(f"[StatsPost] Updated stats post ID in memory to {settings.OVK_STATS_POST_ID}")
             
         except Exception as e:
             logger.error(f"[StatsPost] Failed to update wall stats post: {e}", exc_info=True)
