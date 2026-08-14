@@ -778,7 +778,10 @@ class OpenVKPoller:
             
             # Получаем последнего друга из Redis
             last_friend = await self.responder.redis.get('ovk:last_added_friend')
-            last_friend_text = last_friend.decode('utf-8') if last_friend else "Нет данных"
+            if last_friend:
+                last_friend_text = last_friend.decode('utf-8') if isinstance(last_friend, bytes) else last_friend
+            else:
+                last_friend_text = "Нет данных"
 
             # Форматируем красивый текст поста для OpenVK
             text = (
