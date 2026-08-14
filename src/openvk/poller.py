@@ -160,9 +160,17 @@ class OpenVKPoller:
                     if not uid:
                         continue
 
-                    try:
+                     try:
                         res = await self.client.call_method("friends.add", {"user_id": uid})
                         logger.info(f"[Poller:Friends] Accepted friend request from user {uid}. Result: {res.get('response')}")
+                        
+                        try:
+                            first_name, last_name = await self._get_user_full_name(uid)
+                            friend_info = f"[id{uid}|{first_name} {last_name}]"
+                            await self.responder.redis.set('ovk:last_added_friend', friend_info)
+                        except Exception as stats_err:
+                            logger.error(f"[Stats] Error saving last added friend: {stats_err}")
+                            
                     except Exception as e:
                         logger.error(f"Failed to accept friend request from user {uid}: {e}")
             except Exception as e:
@@ -768,14 +776,17 @@ class OpenVKPoller:
             stats = await StatsRepository.get_stats()
             g = stats["global"]
             
+            # Получаем последнего друга из Redis
+            last_friend = await self.responder.redis.get('ovk:last_added_friend')
+            last_friend_text = last_friend.decode('utf-8') if last_friend else "Нет данных"
+
             # Форматируем красивый текст поста для OpenVK
             text = (
-                "📊 [ОТКРЫТАЯ СТАТИСТИКА ИСПОЛЬЗОВАНИЯ ИИ-БОТА]\n\n"
                 "📈 Глобальные показатели:\n"
                 f"• Всего ответов: {g['total_text_requests']}\n"
-                f"• Сгенерировано картинок: {g['total_image_requests']} "
-                f"(FLUX: {g['flux_success_count']}, Sana: {g['fallback_success_count']})\n"
-                f"• Поставлено лайков: {g['total_likes_count']}\n\n"
+                f"• Сгенерировано картинок: {g['total_image_requests']}\n"
+                f"• Поставлено лайков: {g['total_likes_count']}\n"
+                f"🤝 Последний добавленный друг: {last_friend_text}\n\n"
                 
                 "🏆 ТОП-5 активных собеседников (Текст):\n"
             )
@@ -793,7 +804,10 @@ class OpenVKPoller:
                 for i, u in enumerate(stats["top_image"], 1):
                     text += f"{i}. id{u['vk_id']} ({u['first_name']} {u['last_name']}) — {u['count']} картинок\n"
                     
-            text += f"\nПоследнее обновление: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} MSK"
+            # Получаем корректное московское время через смещение от UTC
+            from datetime import timedelta
+            msk_now = datetime.utcnow() + timedelta(hours=3)
+            text += f"\nПоследнее обновление: {msk_now.strftime('%d.%m.%Y %H:%M:%S')} MSK"
             
             post_setting = str(settings.OVK_STATS_POST_ID).strip()
             if "_" in post_setting:
