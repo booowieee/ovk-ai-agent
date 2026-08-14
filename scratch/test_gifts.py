@@ -13,6 +13,16 @@ from src.core.app_state import AppState
 from src.openvk.client import OpenVKClient
 from src.repositories.settings_repo import SettingsRepository
 
+async def test_gifts_in_category(client, param_name, category_id):
+    try:
+        print(f"[Test] Trying gifts.getGiftsInCategory with parameter '{param_name}'={category_id}...", end=" ")
+        res = await client.call_method("gifts.getGiftsInCategory", {param_name: category_id})
+        print("-> SUCCESS!")
+        return res
+    except Exception as e:
+        print(f"-> FAILED ({e})")
+        return None
+
 async def test_gifts():
     print("Initializing DB...")
     await init_db()
@@ -37,11 +47,20 @@ async def test_gifts():
     print(f"Bot user_id: {client.user_id}")
     print(f"OpenVK Instance: {client.instance_url}")
     
-    print("\n--- Scanning Gift IDs for free ones ---")
+    # 1. Выясняем правильный параметр для getGiftsInCategory
+    print("\n--- Checking getGiftsInCategory parameters ---")
+    for param in ["category_id", "id", "category", "cat_id", "cat"]:
+        res = await test_gifts_in_category(client, param, 1)
+        if res:
+            print(f"Found working parameter: '{param}'")
+            print("Gifts in category 1:", str(res)[:300] + "...")
+            break
+            
+    # 2. Сканируем широкий диапазон ID подарков (от 1 до 150)
+    print("\n--- Scanning Gift IDs 1 to 150 for free ones ---")
     free_ids = []
     
-    # Просканируем первые 20 ID подарков
-    for gift_id in range(1, 21):
+    for gift_id in range(1, 151):
         try:
             print(f"Testing Gift ID {gift_id}...", end=" ", flush=True)
             res = await client.call_method("gifts.send", {
@@ -51,7 +70,6 @@ async def test_gifts():
             })
             response_data = res.get("response", {})
             
-            # Проверяем успешность
             success = False
             if isinstance(response_data, dict):
                 success = (response_data.get("success") == 1 or response_data.get("withdraw_votes") == 0)
@@ -65,7 +83,6 @@ async def test_gifts():
                 error_msg = response_data.get("error", "Unknown error")
                 print(f"-> Paid/Failed ({error_msg})")
         except Exception as e:
-            # Если возникла ошибка API
             err_str = str(e)
             if "enough voices" in err_str or "voices" in err_str:
                 print("-> Paid (Voices error)")
@@ -73,7 +90,7 @@ async def test_gifts():
                 print(f"-> Error: {err_str}")
         
         # Небольшая пауза, чтобы не спамить API
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
         
     print(f"\nScan complete! Found free gift IDs: {free_ids}")
     
