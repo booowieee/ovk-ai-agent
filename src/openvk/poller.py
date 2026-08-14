@@ -160,7 +160,7 @@ class OpenVKPoller:
                     if not uid:
                         continue
 
-                     try:
+                    try:
                         res = await self.client.call_method("friends.add", {"user_id": uid})
                         logger.info(f"[Poller:Friends] Accepted friend request from user {uid}. Result: {res.get('response')}")
                         
