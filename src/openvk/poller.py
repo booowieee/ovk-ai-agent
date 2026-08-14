@@ -183,6 +183,13 @@ class OpenVKPoller:
             notifications = raw.get('response', {}).get('items', [])
             profiles = raw.get('response', {}).get('profiles', [])
 
+            # Помечаем уведомления как прочитанные, чтобы разблокировать очередь OpenVK
+            if notifications:
+                try:
+                    await self.client.call_method("notifications.markAsViewed")
+                except Exception as read_err:
+                    logger.warning(f"[Poller:Debug] Failed to mark notifications as viewed: {read_err}")
+
             for p in (profiles or []):
                 pid = p.get('id')
                 pfname = p.get('first_name')
