@@ -240,12 +240,18 @@ class OpenVKPoller:
                     # Упоминание или ответ в комментарии
                     comment_id = feedback.get('id')
                     mention_key = f"comment:{comment_id}"
-                    if parent:
+                    
+                    # Пытаемся безопасно получить ID поста (из feedback или parent)
+                    post_id = feedback.get('post_id') or (parent.get('post_id') if parent else None)
+                    if not post_id and parent:
+                        # Если parent - это сам пост, его ID лежит в ключе 'id'
                         post_id = parent.get('id')
-                        owner_id = parent.get('owner_id') or parent.get('to_id')
-                    else:
-                        owner_id = feedback.get('owner_id') or feedback.get('to_id')
-                        post_id = feedback.get('post_id')
+                        
+                    # Извлекаем ID владельца стены
+                    owner_id = (feedback.get('owner_id') or feedback.get('to_id') or 
+                                (parent.get('owner_id') if parent else None) or 
+                                (parent.get('to_id') if parent else None) or 
+                                self.client.user_id)
 
                 is_reply = (ntype == 'reply_comment')
                 is_wall_post = (ntype == 'wall')
