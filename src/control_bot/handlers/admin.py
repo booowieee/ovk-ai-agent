@@ -1,19 +1,28 @@
+import html
 from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from redis.asyncio import Redis
 
 from src.config import settings
 from src.repositories.settings_repo import SettingsRepository
+from src.repositories.blacklist_repo import BlacklistRepository
+from src.repositories.stats_repo import StatsRepository
 from src.control_bot.keyboards.reply import get_admin_reply_keyboard
-from src.control_bot.keyboards.inline import get_main_menu_keyboard, get_back_keyboard
+from src.control_bot.keyboards.inline import (
+    get_main_menu_keyboard,
+    get_back_keyboard,
+    get_blacklist_keyboard,
+    get_back_to_blacklist_keyboard,
+    get_stats_keyboard
+)
+from src.utils.logger import logger
 
 router = Router()
 
 class PromptStates(StatesGroup):
     waiting_for_prompt = State()
-
-from src.utils.logger import logger
 
 def is_admin(user_id: int) -> bool:
     is_adm = user_id == settings.ADMIN_TELEGRAM_ID
@@ -23,7 +32,6 @@ def is_admin(user_id: int) -> bool:
         logger.info(f"[Telegram Bot] Message verified from admin user (ID: {user_id}).")
     return is_adm
 
-from redis.asyncio import Redis
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, redis: Redis):
@@ -121,9 +129,9 @@ async def _show_status(message: types.Message, redis: Redis):
     )
 
     if isinstance(message, types.Message):
-        if message.from_user.id == message.chat.id: # not callback edit
+        if message.from_user.id == message.chat.id:
             await message.answer(status_text, reply_markup=get_back_keyboard(), parse_mode="HTML")
-        else: # callback edit
+        else:
             await message.edit_text(status_text, reply_markup=get_back_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data == "menu_ovk_settings")
@@ -153,8 +161,6 @@ async def _show_ovk_settings(message: types.Message):
             await message.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
         else:
             await message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
-
-import html
 
 def format_prompt_preview(prompt: str, max_len: int = 300) -> str:
     if not prompt:
@@ -254,10 +260,6 @@ async def cb_emergency_resume(callback: types.CallbackQuery, redis):
 class BlacklistStates(StatesGroup):
     waiting_for_add_id = State()
     waiting_for_remove_id = State()
-
-
-from src.repositories.blacklist_repo import BlacklistRepository
-from src.control_bot.keyboards.inline import get_blacklist_keyboard, get_back_to_blacklist_keyboard
 
 
 @router.callback_query(F.data == "menu_blacklist")
@@ -405,9 +407,6 @@ async def msg_stats(message: types.Message):
 
 
 async def _show_stats(message: types.Message):
-    from src.repositories.stats_repo import StatsRepository
-    from src.control_bot.keyboards.inline import get_stats_keyboard
-    
     stats = await StatsRepository.get_stats()
     g = stats["global"]
     
@@ -437,9 +436,9 @@ async def _show_stats(message: types.Message):
         text += "\n"
         
     if isinstance(message, types.Message):
-        if message.from_user.id == message.chat.id: # not callback edit
+        if message.from_user.id == message.chat.id:
             await message.answer(text, reply_markup=get_stats_keyboard(), parse_mode="HTML", disable_web_page_preview=True)
-        else: # callback edit
+        else:
             await message.edit_text(text, reply_markup=get_stats_keyboard(), parse_mode="HTML", disable_web_page_preview=True)
 
 
@@ -447,6 +446,5 @@ async def _show_stats(message: types.Message):
 async def cmd_clear_stats(message: types.Message):
     if not is_admin(message.from_user.id):
         return
-    from src.repositories.stats_repo import StatsRepository
     await StatsRepository.clear_stats()
     await message.answer("✅ Статистика успешно сброшена.")

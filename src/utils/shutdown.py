@@ -34,5 +34,5 @@ def setup_signal_handlers(loop, state):
                 lambda s=sig: asyncio.create_task(graceful_shutdown(state))
             )
     except NotImplementedError:
-        # Windows does not support add_signal_handler
+        # Windows не поддерживает add_signal_handler
         pass

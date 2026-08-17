@@ -40,11 +40,11 @@ def is_mention_of_user(text: str, user_id: int, username: Optional[str] = None) 
 
 def clean_mention_from_text(text: str, user_id: int, username: Optional[str] = None) -> str:
     """Убирает упоминание бота из текста, чтобы не засорять промпт."""
-    # Remove [id123|Name] format
+    # Удаляем упоминание формата [id123|Имя]
     text = re.sub(rf'\[id{user_id}\|[^\]]+\]', '', text)
-    # Remove [username|Name] format
+    # Удаляем упоминание формата [username|Имя]
     if username:
         text = re.sub(rf'\[{re.escape(username)}\|[^\]]+\]', '', text, flags=re.IGNORECASE)
-        # Remove @username format
+        # Удаляем упоминание формата @username
         text = re.sub(rf'@{re.escape(username)}\b', '', text, flags=re.IGNORECASE)
     return text.strip()

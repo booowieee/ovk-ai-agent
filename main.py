@@ -24,15 +24,15 @@ async def main():
         "=================================================="
     )
 
-    # Initialize DB
+    # Инициализация базы данных
     await init_db()
 
-    # Setup application state
+    # Настройка состояния приложения
     app_state = AppState()
     await app_state.init_connections(settings.REDIS_URL)
     app_state.poll_interval = settings.POLL_INTERVAL
 
-    # Initialize services
+    # Инициализация сервисов
     gemini_service = GeminiService(app_state)
     openvk_client = OpenVKClient(
         state=app_state,
@@ -55,44 +55,44 @@ async def main():
     except Exception as e:
         logger.error(f"[Gemini] Failed to list available models: {e}")
 
-    # Initialize Telegram Control Bot
+    # Инициализация Telegram-бота управления
     bot = Bot(token=settings.BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(admin_router)
     
-    # Inject redis into dispatcher for handlers
+    # Передача Redis в диспетчер для обработчиков
     dp['redis'] = app_state.redis
 
-    # Setup graceful shutdown
+    # Настройка корректного завершения
     loop = asyncio.get_running_loop()
     setup_signal_handlers(loop, app_state)
 
     async def run_poller():
-        """Supervised poller execution"""
+        """Запуск поллера с автовосстановлением"""
         while app_state.is_running:
             try:
                 await openvk_poller.run()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Ошибка в поллере OpenVK: {e}")
+                logger.error(f"Error in OpenVK poller: {e}")
                 if app_state.is_running:
                     await asyncio.sleep(5) # backoff
 
     async def run_telegram_bot():
-        """Supervised bot execution"""
+        """Запуск Telegram-бота с автовосстановлением"""
         while app_state.is_running:
             try:
                 await dp.start_polling(bot)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Ошибка в Telegram боте: {e}")
+                logger.error(f"Error in Telegram bot: {e}")
                 if app_state.is_running:
                     await asyncio.sleep(5)
 
     try:
-        # Run both tasks concurrently
+        # Параллельный запуск задач
         await asyncio.gather(
             run_poller(),
             run_telegram_bot()
@@ -100,11 +100,11 @@ async def main():
     except asyncio.CancelledError:
         logger.info("Main tasks cancelled.")
     finally:
-        logger.info("Выполняю очистку ресурсов...")
+        logger.info("Cleaning up resources...")
         app_state.is_running = False
         await app_state.close()
         await bot.session.close()
-        logger.info("Ресурсы очищены. Завершение работы.")
+        logger.info("Resources cleaned up. Shutdown complete.")
 
 if __name__ == "__main__":
     try:
@@ -112,4 +112,4 @@ if __name__ == "__main__":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Работа приложения прервана пользователем.")
+        logger.info("Application execution interrupted by user.")

@@ -45,7 +45,7 @@ class StatsRepository:
     @staticmethod
     async def get_stats() -> dict:
         async with async_session_factory() as session:
-            # 1. Global stats
+            # Глобальная статистика
             result = await session.execute(select(SystemStats).where(SystemStats.id == 1))
             gs = result.scalar_one_or_none()
             
@@ -57,7 +57,7 @@ class StatsRepository:
                 "total_likes_count": gs.total_likes_count if gs else 0,
             }
             
-            # 2. Top 5 text users
+            # Топ-5 пользователей по текстовым запросам
             res_text = await session.execute(
                 select(UserActivity)
                 .where(UserActivity.text_requests_count > 0)
@@ -74,7 +74,7 @@ class StatsRepository:
                 for u in res_text.scalars().all()
             ]
             
-            # 3. Top 5 image users
+            # Топ-5 пользователей по генерации картинок
             res_image = await session.execute(
                 select(UserActivity)
                 .where(UserActivity.image_requests_count > 0)

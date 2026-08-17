@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from src.config import settings
 from src.database.models import Base, SystemSettings, BlacklistedUser, AutoBlockedUser, UserActivity, SystemStats
 from src.utils.logger import logger
@@ -12,8 +12,6 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
     
     async with async_session_factory() as session:
-        # Удаляем ID самого бота из черных списков (если он туда попал ранее)
-        from sqlalchemy import delete
         if settings.OVK_USER_ID:
             await session.execute(delete(BlacklistedUser).where(BlacklistedUser.vk_id == settings.OVK_USER_ID))
             await session.execute(delete(AutoBlockedUser).where(AutoBlockedUser.vk_id == settings.OVK_USER_ID))

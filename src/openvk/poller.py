@@ -1,15 +1,21 @@
 import asyncio
+from datetime import datetime, timedelta
 import hashlib
+import httpx
 import random
 import re
 import time
 from typing import Optional
+
+from src.config import settings
 from src.core.app_state import AppState
 from src.openvk.client import OpenVKClient
 from src.openvk.responder import OpenVKResponder
-from src.repositories.settings_repo import SettingsRepository
-from src.utils.logger import logger
 from src.openvk.mention_parser import clean_mention_from_text, is_mention_of_user
+from src.repositories.settings_repo import SettingsRepository
+from src.repositories.blacklist_repo import BlacklistRepository
+from src.repositories.stats_repo import StatsRepository
+from src.utils.logger import logger
 
 
 class OpenVKPoller:
@@ -64,28 +70,28 @@ class OpenVKPoller:
 
                 logger.info(f"[Poller] Tick. Active walls: {self._monitored_walls}")
 
-                # 1. Сначала обрабатываем уведомления
+                # Обработка уведомлений
                 await self._process_notifications(db_settings)
 
-                # 2. Опрашиваем стены
+                # Опрос активных стен
                 await self._poll_walls(db_settings)
 
-                # 3. Обрабатываем личные сообщения (ЛС)
+                # Обработка личных сообщений
                 await self._process_private_messages(db_settings)
 
-                # 4. Комментируем посты из глобальной новостной ленты
+                # Комментирование постов глобальной ленты
                 await self._process_global_feed(db_settings)
 
-                # 5. Вечный статус онлайн
+                # Поддержание статуса онлайн
                 await self._maintain_online()
 
-                # 6. Автодобавление в друзья
+                # Автодобавление в друзья
                 await self._auto_accept_friends()
 
-                # 7. Рассылка подарков старым друзьям (по одному за тик)
+                # Отправка подарков друзьям по очереди
                 await self._process_old_friends_gifting()
 
-                # 8. Обновление закрепленного поста со статистикой
+                # Обновление поста статистики
                 await self._check_and_update_stats_post()
 
             except Exception as e:
@@ -226,7 +232,6 @@ class OpenVKPoller:
                     continue
 
                 if from_user_id:
-                    from src.repositories.blacklist_repo import BlacklistRepository
                     if await BlacklistRepository.is_blacklisted(from_user_id) or await BlacklistRepository.is_auto_blocked(from_user_id):
                         continue
 
@@ -332,7 +337,6 @@ class OpenVKPoller:
                     is_post_on_bot_wall = (owner_id == self.client.user_id)
                     post_author = post.get('from_id')
                     if post_author:
-                        from src.repositories.blacklist_repo import BlacklistRepository
                         if await BlacklistRepository.is_blacklisted(post_author) or await BlacklistRepository.is_auto_blocked(post_author):
                             continue
                     post_text = post.get('text', '')
@@ -366,7 +370,6 @@ class OpenVKPoller:
                         cid = comment.get('id')
                         from_user_id = comment.get('from_id')
                         if from_user_id:
-                            from src.repositories.blacklist_repo import BlacklistRepository
                             if await BlacklistRepository.is_blacklisted(from_user_id) or await BlacklistRepository.is_auto_blocked(from_user_id):
                                 continue
                         text = comment.get('text', '')
@@ -404,7 +407,6 @@ class OpenVKPoller:
                 if is_permanent:
                     if wall_owner_id in self._monitored_walls:
                         self._monitored_walls.remove(wall_owner_id)
-                    from src.repositories.blacklist_repo import BlacklistRepository
                     await BlacklistRepository.add_to_auto_blocked(wall_owner_id)
                     logger.warning(f"[Poller] Wall {wall_owner_id} is inaccessible (HTTP {status_code}). Removed from monitoring & added to auto-blocked.")
                 else:
@@ -451,7 +453,6 @@ class OpenVKPoller:
                     continue
 
                 if from_id:
-                    from src.repositories.blacklist_repo import BlacklistRepository
                     if await BlacklistRepository.is_blacklisted(from_id) or await BlacklistRepository.is_auto_blocked(from_id):
                         try:
                             await self.client.call_method("messages.markAsRead", {
@@ -506,7 +507,6 @@ class OpenVKPoller:
                         if from_id:
                             try:
                                 first_name, last_name = await self._get_user_full_name(from_id)
-                                from src.repositories.stats_repo import StatsRepository
                                 await StatsRepository.increment_user_activity(from_id, first_name, last_name, is_image=False)
                                 await StatsRepository.increment_global_stats(text=1)
                             except Exception as stats_err:
@@ -519,9 +519,7 @@ class OpenVKPoller:
                     logger.error(f"[PM] Error generating/sending response for message {msg_id}: {e}. Releasing lock.", exc_info=True)
                     await self.responder.release_lock(mention_key)
                     if from_id and from_id > 0:
-                        import httpx
                         if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (400, 401, 403, 404):
-                            from src.repositories.blacklist_repo import BlacklistRepository
                             await BlacklistRepository.add_to_auto_blocked(from_id)
 
         except Exception as e:
@@ -561,7 +559,6 @@ class OpenVKPoller:
                 # Игнорируем пользователей из черного списка
                 if source_id:
                     actual_id = abs(source_id)
-                    from src.repositories.blacklist_repo import BlacklistRepository
                     if await BlacklistRepository.is_blacklisted(actual_id) or await BlacklistRepository.is_auto_blocked(actual_id):
                         continue
 
@@ -581,10 +578,10 @@ class OpenVKPoller:
                 logger.info("[Poller:GlobalFeed] No suitable posts found in this tick.")
                 return
 
-            # Выбираем случайный пост из подходящих (комментируем 1 пост раз в 10 минут)
+            # Выбор случайного поста
             source_id, post_id, post_text, redis_key = random.choice(valid_posts)
 
-            # Живая проверка: действительно ли там нет нашего комментария
+            # Проверка отсутствия существующего комментария бота
             try:
                 comments = await self._get_latest_comments(source_id, post_id, limit=50)
                 if any(c.get('from_id') == self.client.user_id for c in comments):
@@ -594,12 +591,12 @@ class OpenVKPoller:
             except Exception as e:
                 logger.error(f"Error doing live check on global post {source_id}_{post_id}: {e}")
 
-            # Ставим блокировку в Redis, чтобы не комментировать повторно
+            # Блокировка в Redis для предотвращения повторной отправки
             await self.responder.redis.set(redis_key, "1", ex=604800)  # 7 дней
 
             logger.info(f"[Poller:GlobalFeed] Selected post {source_id}_{post_id} for commenting. Text preview: '{post_text[:50]}...'")
 
-            # Генерируем ответ. Инструктируем Gemini прокомментировать чужой пост в тему
+            # Генерация комментария к внешнему посту
             custom_system_prompt = (
                 "Ты пользователь социальной сети. Напиши короткий, уместный комментарий "
                 "к посту другого человека, выразив свое мнение в тему. "
@@ -614,14 +611,12 @@ class OpenVKPoller:
                 await self.responder.redis.delete(redis_key)
                 return
 
-            # Отправляем комментарий к посту
             guid = int(hashlib.md5(redis_key.encode()).hexdigest()[:8], 16)
             result = await self.responder.reply_to_post(source_id, post_id, response, guid=guid)
 
             if result is not None:
                 logger.info(f"[Poller:GlobalFeed] Successfully commented on post {source_id}_{post_id}")
                 try:
-                    from src.repositories.stats_repo import StatsRepository
                     await StatsRepository.increment_global_stats(text=1, likes=1)
                 except Exception as stats_err:
                     logger.error(f"[Stats] Error updating global feed stats: {stats_err}")
@@ -715,7 +710,7 @@ class OpenVKPoller:
             await self.responder.mark_completed(mention_key)
             return
 
-        # Инъекция технического требования прямо в текст запроса, чтобы обойти вредный характер бота
+        # Inject image generation tag if drawing intent is detected
         if image_gen_enabled:
             drawing_keywords = ["нарисуй", "сгенерируй", "картинку", "картинка", "рисунок", "покажи фото", "скинь фото", "изобрази", "арт", "draw", "paint", "generate"]
             text_lower = clean_text.lower()
@@ -770,7 +765,6 @@ class OpenVKPoller:
             if from_user_id:
                 try:
                     first_name, last_name = await self._get_user_full_name(from_user_id)
-                    from src.repositories.stats_repo import StatsRepository
                     await StatsRepository.increment_user_activity(from_user_id, first_name, last_name, is_image=bool(attachments))
                     await StatsRepository.increment_global_stats(
                         text=1,
@@ -786,7 +780,6 @@ class OpenVKPoller:
                 await self.responder.add_like("post", owner_id, post_id)
 
         except Exception as e:
-            import httpx
             is_permanent = False
             if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (400, 401, 403, 404):
                 is_permanent = True
@@ -799,8 +792,6 @@ class OpenVKPoller:
                 await self.responder.release_lock(mention_key)
 
     async def _check_and_update_stats_post(self):
-        from src.config import settings
-        import time
         now = time.time()
         # Обновляем пост раз в 10 минут (600 секунд)
         if now - self._last_stats_post_update < 600:
@@ -809,20 +800,17 @@ class OpenVKPoller:
         self._last_stats_post_update = now
 
         try:
-            from src.repositories.stats_repo import StatsRepository
-            from datetime import datetime
-            
             stats = await StatsRepository.get_stats()
             g = stats["global"]
             
-            # Получаем последнего друга из Redis
+            # Получение последнего добавленного друга
             last_friend = await self.responder.redis.get('ovk:last_added_friend')
             if last_friend:
                 last_friend_text = last_friend.decode('utf-8') if isinstance(last_friend, bytes) else last_friend
             else:
                 last_friend_text = "Нет данных"
 
-            # Форматируем красивый текст поста для OpenVK
+            # Форматирование текста поста статистики
             text = (
                 "📈 Глобальные показатели:\n"
                 f"• Всего ответов: {g['total_text_requests']}\n"
@@ -846,12 +834,11 @@ class OpenVKPoller:
                 for i, u in enumerate(stats["top_image"], 1):
                     text += f"{i}. id{u['vk_id']} ({u['first_name']} {u['last_name']}) — {u['count']} картинок\n"
                     
-            # Получаем корректное московское время через смещение от UTC
-            from datetime import timedelta
+            # Получение московского времени (UTC+3)
             msk_now = datetime.utcnow() + timedelta(hours=3)
             text += f"\nПоследнее обновление: {msk_now.strftime('%d.%m.%Y %H:%M:%S')} MSK"
             
-            # Получаем ID поста из Redis, если его там нет - берем из настроек
+            # Получение ID поста статистики
             post_id_val = await self.responder.redis.get('ovk:stats_post_id')
             if post_id_val:
                 post_setting = post_id_val.decode('utf-8') if isinstance(post_id_val, bytes) else str(post_id_val)
@@ -860,7 +847,7 @@ class OpenVKPoller:
                 if post_setting:
                     await self.responder.redis.set('ovk:stats_post_id', post_setting)
 
-            # Если ID поста нигде нет, создаем новый пост автоматически (первый запуск)
+            # Создание нового поста при отсутствии ID
             if not post_setting:
                 logger.info("[StatsPost] No stats post ID specified. Creating one dynamically...")
                 owner_id = self.client.user_id
@@ -895,11 +882,10 @@ class OpenVKPoller:
                 post_id = int(post_setting)
 
             logger.info(f"[StatsPost] Updating stats post {owner_id}_{post_id}...")
-            import httpx
             is_permanent_error = False
             
             try:
-                # Передаем и post_id, и id для обратной совместимости с разными версиями OpenVK
+                # Передача post_id и id для совместимости с версиями OpenVK
                 res = await self.client.call_method("wall.edit", {
                     "owner_id": owner_id,
                     "post_id": post_id,
@@ -915,7 +901,7 @@ class OpenVKPoller:
                     is_permanent_error = True
                 
                 if not is_permanent_error:
-                    # Временная сетевая ошибка (502, таймаут) - прокидываем дальше
+                    # Проброс временных сетевых ошибок (502, таймаут)
                     raise edit_err
                 
                 logger.warning(
@@ -923,7 +909,7 @@ class OpenVKPoller:
                     f"Attempting to re-create the stats post..."
                 )
                 
-                # 1. Создаем новый пост со статистикой
+                # Создание нового поста со статистикой
                 post_res = await self.client.call_method("wall.post", {
                     "owner_id": owner_id,
                     "message": text
@@ -934,7 +920,7 @@ class OpenVKPoller:
                 
                 logger.info(f"[StatsPost] Created new stats post {owner_id}_{new_post_id}")
                 
-                # 2. Пытаемся удалить старый пост
+                # Удаление старого поста
                 try:
                     await self.client.call_method("wall.delete", {
                         "owner_id": owner_id,
@@ -945,7 +931,7 @@ class OpenVKPoller:
                 except Exception as del_err:
                     logger.error(f"[StatsPost] Failed to delete old post {owner_id}_{post_id}: {del_err}")
                 
-                # 3. Пытаемся закрепить новый пост
+                # Закрепление нового поста
                 try:
                     await self.client.call_method("wall.pin", {
                         "owner_id": owner_id,
@@ -955,7 +941,7 @@ class OpenVKPoller:
                 except Exception as pin_err:
                     logger.error(f"[StatsPost] Failed to pin new post {owner_id}_{new_post_id}: {pin_err}")
                 
-                # 4. Обновляем ID в настройках в памяти и в Redis!
+                # Обновление ID поста статистики в памяти и Redis
                 new_setting = f"{owner_id}_{new_post_id}" if "_" in post_setting else str(new_post_id)
                 settings.OVK_STATS_POST_ID = new_setting
                 await self.responder.redis.set('ovk:stats_post_id', new_setting)
@@ -969,7 +955,7 @@ class OpenVKPoller:
         try:
             prompt = "Напиши один очень короткий, приличный и смешной анекдот на русском языке. Только сам анекдот, без вступлений и лишних слов."
             resp = await self.gemini_service.client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=prompt
             )
             joke = resp.text.strip() if resp.text else ""
@@ -983,8 +969,6 @@ class OpenVKPoller:
     async def _fetch_joke_via_api(self) -> str:
         """Получает случайный анекдот с внешнего бесплатного API rzhunemogu."""
         try:
-            import httpx
-            import re
             async with httpx.AsyncClient() as client:
                 resp = await client.get("http://rzhunemogu.ru/RandJSON.aspx?CType=1", timeout=5.0)
                 text = resp.content.decode('cp1251', errors='ignore')
@@ -1002,7 +986,6 @@ class OpenVKPoller:
         """Парсит числовой ID подарка из URL картинки."""
         if not image_url:
             return None
-        import re
         match = re.search(r'gift(\d+)_', image_url)
         if match:
             return int(match.group(1))
@@ -1011,7 +994,6 @@ class OpenVKPoller:
     async def _get_available_free_gift_ids(self) -> list[int]:
         """Динамически запрашивает все доступные бесплатные ID подарков с ненулевым лимитом usages_left."""
         try:
-            import time
             now = time.time()
             # Кешируем список на 1 час, чтобы не спамить API на каждом тике
             if hasattr(self, '_cached_free_gifts') and hasattr(self, '_last_gifts_cache_time'):
@@ -1057,7 +1039,6 @@ class OpenVKPoller:
     async def _send_gift_with_joke(self, target_user_id: int, is_new_friend: bool = True):
         """Отправляет случайный подарок с анекдотом пользователю."""
         try:
-            import random
             # Динамически получаем доступные бесплатные подарки
             gift_ids = await self._get_available_free_gift_ids()
             if not gift_ids:
@@ -1102,7 +1083,6 @@ class OpenVKPoller:
 
     async def _process_old_friends_gifting(self):
         """Опрашивает список существующих друзей и дарит подарок по одному за тик (чтобы не спамить)."""
-        import time
         now = time.time()
         
         # Если очередь пуста, пробуем обновить её раз в 1 час
